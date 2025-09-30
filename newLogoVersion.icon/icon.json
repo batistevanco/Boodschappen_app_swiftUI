@@ -7,13 +7,13 @@
       "layers" : [
         {
           "glass" : false,
-          "image-name" : "3.svg",
-          "name" : "3",
+          "image-name" : "3 2.svg",
+          "name" : "3 2",
           "position" : {
             "scale" : 4,
             "translation-in-points" : [
-              68.5078125,
-              -41.6953125
+              60.37118459330725,
+              -41.0078125
             ]
           }
         }

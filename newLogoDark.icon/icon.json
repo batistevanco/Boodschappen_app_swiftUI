@@ -7,13 +7,13 @@
       "layers" : [
         {
           "glass" : false,
-          "image-name" : "4.svg",
-          "name" : "4",
+          "image-name" : "Green Professional Studio Logo.svg",
+          "name" : "Green Professional Studio Logo",
           "position" : {
             "scale" : 4,
             "translation-in-points" : [
-              83.6640625,
-              -57.937971044493
+              60.371415174043705,
+              -37.75
             ]
           }
         }

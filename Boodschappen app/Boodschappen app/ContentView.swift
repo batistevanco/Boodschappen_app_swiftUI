@@ -288,7 +288,7 @@ struct ContentView: View {
                 // Sticky totals bottom bar (altijd zichtbaar; KPI's conditioneel)
                 totalsBar
             }
-            .navigationTitle("🛒 BOCHP.")
+            .navigationTitle("🛒 InMandje")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Instellingen") { showSettings = true } } }
             // Removed keyboard toolbar with "Gereed" button
