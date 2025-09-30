@@ -28,7 +28,6 @@ struct Settings: Codable, Equatable {
     }
     var currency: String = "EUR"
     var theme: Theme = .system
-    var fontScale: Double = 1.0
     var stores: [String] = Defaults.defaultStores
     var showPrice: Bool = true
 }
@@ -60,6 +59,15 @@ struct MoneyFormatter {
         nf.currencyCode = currency
         return nf.string(from: NSNumber(value: value)) ?? String(format: "€ %.2f", value)
     }
+}
+
+// Helper to get currency symbol for a given code
+func currencySymbol(_ code: String) -> String {
+    let nf = NumberFormatter()
+    nf.numberStyle = .currency
+    nf.locale = Locale(identifier: "nl_BE")
+    nf.currencyCode = code
+    return nf.currencySymbol
 }
 
 func round2(_ n: Double) -> Double { ( (n * 100).rounded() ) / 100 }
@@ -283,6 +291,7 @@ struct ContentView: View {
             .navigationTitle("🛒 BOCHP.")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Instellingen") { showSettings = true } } }
+            // Removed keyboard toolbar with "Gereed" button
         }
         .preferredColorScheme(resolvedColorScheme)
         .sheet(isPresented: $showSettings) { SettingsSheet(store: store) }
@@ -362,7 +371,7 @@ struct ContentView: View {
                     }
                     if store.state.settings.showPrice {
                         VStack(alignment: .leading) {
-                            Text("Prijs/stuk (€)").font(.caption2).foregroundStyle(.secondary)
+                            Text("Prijs/stuk (\(currencySymbol(store.state.settings.currency)))").font(.caption2).foregroundStyle(.secondary)
                             TextField("0,00", text: $price)
                                 .focused($focusedField, equals: .price)
                                 .onSubmit { addCurrentItem() }
@@ -459,22 +468,14 @@ struct ContentView: View {
             // Apply background material ONLY to the height of the bar, and only when prices are on
             barContent
                 .background(
-                    Group {
-                        if store.state.settings.showPrice {
-                            UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
-                                .fill(.ultraThinMaterial)
-                                .ignoresSafeArea(edges: .bottom)
-                        }
-                    }
+                    UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
+                        .fill(store.state.settings.showPrice ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.secondary.opacity(0.08)))
+                        .ignoresSafeArea(edges: .bottom)
                 )
                 .overlay(
-                    Group {
-                        if store.state.settings.showPrice {
-                            UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
-                                .stroke(Color.secondary.opacity(0.15))
-                                .ignoresSafeArea(edges: .bottom)
-                        }
-                    }
+                    UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
+                        .stroke(Color.secondary.opacity(0.15))
+                        .ignoresSafeArea(edges: .bottom)
                 )
         }
         .ignoresSafeArea(edges: .bottom)
@@ -626,7 +627,7 @@ struct EditItemSheet: View {
                 Section(header: Text("Item")) {
                     TextField("Naam", text: $name)
                     TextField("Aantal", text: $qty).keyboardType(.decimalPad)
-                    TextField("Prijs/stuk", text: $price).keyboardType(.decimalPad)
+                    TextField("Prijs/stuk (\(currencySymbol(currency)))", text: $price).keyboardType(.decimalPad)
                     Picker("Winkel", selection: $store) { ForEach(stores, id: \.self) { Text($0).tag($0) } }
                     Toggle("Terugkeerbaar", isOn: $recurring)
                 }
@@ -706,13 +707,6 @@ struct SettingsSheet: View {
                     Picker("Thema", selection: $store.state.settings.theme) {
                         ForEach(Settings.Theme.allCases) { t in Text(t.title).tag(t) }
                     }
-                    Picker("Tekstgrootte", selection: $store.state.settings.fontScale) {
-                        Text("Kleiner").tag(0.90)
-                        Text("Standaard").tag(1.0)
-                        Text("Groter").tag(1.12)
-                        Text("Extra groot").tag(1.25)
-                        Text("Zeer groot").tag(1.35)
-                    }
                     Toggle("Werk met prijzen", isOn: $store.state.settings.showPrice)
                         .tint(.blue)
                     Text("Als uit, voeg je items toe zonder prijs. (Totaal blijft €0 totdat je prijzen invult.)").font(.footnote).foregroundStyle(.secondary)
@@ -740,12 +734,9 @@ struct SettingsSheet: View {
                 }
             }
             .scrollDismissesKeyboard(.immediately)
-            .onTapGesture {
-                newStoreFocused = false
-                resignKeyboard()
-            }
             .navigationTitle("Instellingen")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Bewaren") { dismiss() }.bold() } }
+            // Removed keyboard toolbar with "Gereed" button
             .alert("Alles resetten?", isPresented: $showResetAlert) {
                 Button("Annuleer", role: .cancel) {}
                 Button("Reset", role: .destructive) { store.state = AppState() }
