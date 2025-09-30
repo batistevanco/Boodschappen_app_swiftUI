@@ -196,6 +196,69 @@ struct ContentView: View {
     @FocusState private var focusedField: Field?
     private enum Field { case name, qty, price }
 
+    // Precomputed helpers to keep the body simpler (helps the type-checker)
+    private var storeListComputed: [String] {
+        ["Alle"] + store.state.settings.stores.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    // Helper actions (keeps closures tiny for the type-checker)
+    private func handleChange(_ updated: GroceryItem) { store.updateItem(updated) }
+    private func deleteItem(id: String) { store.removeItem(id: id) }
+
+    @ViewBuilder
+    private func row(for it: GroceryItem) -> some View {
+        ItemRow(
+            item: it,
+            currency: store.state.settings.currency,
+            showAmounts: store.state.settings.showPrice,
+            onChange: handleChange,
+            onEdit: { editTarget = it },
+            onDelete: { deleteItem(id: it.id) }
+        )
+        Divider().overlay(Color.secondary.opacity(0.15))
+    }
+
+    // The list card extracted so the body stays small
+    private var listCard: some View {
+        VStack(spacing: 0) {
+            let items = visibleItems
+            if items.isEmpty {
+                Text("Nog niets hier. Voeg items toe hieronder 👇")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(24)
+            } else {
+                ForEach(items, id: \.id) { it in
+                    row(for: it)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.secondary.opacity(0.15)))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(12)
+    }
+
+    // Group the heavy ScrollView content to keep `body` lightweight
+    private var scrollContent: some View {
+        Group {
+            topToolbar
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+
+            if viewMode == .store {
+                StoreFilterView(stores: storeListComputed, selection: $storeFilter)
+                    .padding(.horizontal, 12)
+            }
+
+            listCard
+
+            addCard
+                .padding(.horizontal, 12)
+                .padding(.bottom, 160) // leave space for sticky totals
+        }
+    }
+
     private var resolvedColorScheme: ColorScheme? {
         switch store.state.settings.theme {
         case .system: return nil
@@ -209,47 +272,12 @@ struct ContentView: View {
             ZStack {
                 ScrollViewReader { _ in
                     ScrollView {
-                        topToolbar
-                            .padding(.horizontal, 12)
-                            .padding(.top, 8)
-
-                        // Store filter (only in store view)
-                        if viewMode == .store {
-                            StoreFilterView(stores: ["Alle"] + store.state.settings.stores.sorted(), selection: $storeFilter)
-                                .padding(.horizontal, 12)
-                        }
-
-                        // List card
-                        VStack(spacing: 0) {
-                            let items = visibleItems
-                            if items.isEmpty {
-                                Text("Nog niets hier. Voeg items toe hieronder 👇")
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(24)
-                            } else {
-                                ForEach(items) { it in
-                                    ItemRow(item: it, currency: store.state.settings.currency) { updated in
-                                        store.updateItem(updated)
-                                    } onEdit: { editTarget = it } onDelete: { store.removeItem(id: it.id) }
-                                    Divider().overlay(Color.secondary.opacity(0.15))
-                                }
-                            }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.secondary.opacity(0.15)))
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        .padding(12)
-
-                        // Adder card
-                        addCard
-                            .padding(.horizontal, 12)
-                            .padding(.bottom, 160) // leave space for sticky totals
+                        scrollContent
                     }
                     .scrollDismissesKeyboard(.immediately)
                 }
 
-                // Sticky totals bottom bar
+                // Sticky totals bottom bar (altijd zichtbaar; KPI's conditioneel)
                 totalsBar
             }
             .navigationTitle("🛒 BOCHP.")
@@ -385,19 +413,21 @@ struct ContentView: View {
     private var totalsBar: some View {
         VStack {
             Spacer()
-            VStack(spacing: 10) {
-                // KPIs
-                HStack(spacing: 10) {
-                    KPI(title: "Totaal (zicht)", value: MoneyFormatter.string(totalVisible, currency: store.state.settings.currency))
-                    KPI(title: "Totaal (alle winkels)", value: MoneyFormatter.string(totalAll, currency: store.state.settings.currency))
-                    KPI(title: "Totaal deze maand", value: MoneyFormatter.string(store.state.monthTotal, currency: store.state.settings.currency))
+            // The bar content itself
+            let barContent = VStack(spacing: 10) {
+                // KPI's alleen wanneer prijzen zichtbaar zijn
+                if store.state.settings.showPrice {
+                    HStack(spacing: 10) {
+                        KPI(title: "Totaal (zicht)", value: MoneyFormatter.string(totalVisible, currency: store.state.settings.currency))
+                        KPI(title: "Totaal (alle winkels)", value: MoneyFormatter.string(totalAll, currency: store.state.settings.currency))
+                        KPI(title: "Totaal deze maand", value: MoneyFormatter.string(store.state.monthTotal, currency: store.state.settings.currency))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 12)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 12)
 
                 HStack(spacing: 15) {
                     Button { let added = store.nextWeek();
-                        // Optional toast: use alert
                         showInfoAlert(title: "+\(MoneyFormatter.string(added, currency: store.state.settings.currency)) toegevoegd aan Totaal deze maand.")
                     } label: {
                         Text("Volgende week")
@@ -424,7 +454,28 @@ struct ContentView: View {
                 .padding(.bottom, 28)
             }
             .padding(.top, 8)
-            .background(.ultraThinMaterial)
+            .frame(maxWidth: .infinity)
+
+            // Apply background material ONLY to the height of the bar, and only when prices are on
+            barContent
+                .background(
+                    Group {
+                        if store.state.settings.showPrice {
+                            UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
+                                .fill(.ultraThinMaterial)
+                                .ignoresSafeArea(edges: .bottom)
+                        }
+                    }
+                )
+                .overlay(
+                    Group {
+                        if store.state.settings.showPrice {
+                            UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
+                                .stroke(Color.secondary.opacity(0.15))
+                                .ignoresSafeArea(edges: .bottom)
+                        }
+                    }
+                )
         }
         .ignoresSafeArea(edges: .bottom)
     }
@@ -474,9 +525,26 @@ struct ContentView: View {
 struct ItemRow: View {
     @State var item: GroceryItem
     let currency: String
+    let showAmounts: Bool
     var onChange: (GroceryItem) -> Void
     var onEdit: () -> Void
     var onDelete: () -> Void
+
+    init(
+        item: GroceryItem,
+        currency: String,
+        showAmounts: Bool,
+        onChange: @escaping (GroceryItem) -> Void,
+        onEdit: @escaping () -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        self._item = State(initialValue: item)
+        self.currency = currency
+        self.showAmounts = showAmounts
+        self.onChange = onChange
+        self.onEdit = onEdit
+        self.onDelete = onDelete
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -493,9 +561,18 @@ struct ItemRow: View {
                     Text(item.name).fontWeight(.semibold)
                     if item.recurring { Text("↻").font(.subheadline).padding(.horizontal, 8).padding(.vertical, 4).background(Capsule().fill(Color.blue.opacity(0.2))) }
                 }
-                Text("\(item.store) • \(formatQty(item.qty)) × \(MoneyFormatter.string(item.unitPrice, currency: currency)) = ") + Text(MoneyFormatter.string(totalOfItem(item), currency: currency)).bold()
+                if showAmounts {
+                    HStack(spacing: 4) {
+                        Text("\(item.store) • \(formatQty(item.qty)) × \(MoneyFormatter.string(item.unitPrice, currency: currency)) =")
+                        Text(MoneyFormatter.string(totalOfItem(item), currency: currency)).bold()
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                } else {
+                    Text(item.store)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             HStack(spacing: 8) {
@@ -588,38 +665,15 @@ struct StoreFilterView: View {
     @Binding var selection: String
 
     var body: some View {
-        // Mooier pill-stijl met vloeiende wrap en duidelijkere selectie
-        let columns = [GridItem(.adaptive(minimum: 110), spacing: 10)]
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
-            ForEach(stores, id: \.self) { s in
-                Button {
-                    selection = s
-                } label: {
-                    Text(s)
-                        .font(.callout.weight(selection == s ? .semibold : .regular))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 14)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            Group {
-                                if selection == s {
-                                    Capsule().fill(Color.accentColor.opacity(0.18))
-                                } else {
-                                    Capsule().fill(.thinMaterial)
-                                }
-                            }
-                        )
-                        .overlay(
-                            Capsule()
-                                .stroke(selection == s ? Color.accentColor : Color.secondary.opacity(0.22), lineWidth: 1)
-                        )
-                        .shadow(radius: selection == s ? 1.5 : 0)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Kies winkel").font(.caption).foregroundStyle(.secondary)
+            Picker("Winkel", selection: $selection) {
+                ForEach(stores, id: \.self) { s in
+                    Text(s).tag(s)
                 }
-                .buttonStyle(.plain)
-                .animation(.spring(response: 0.25, dampingFraction: 0.9), value: selection)
             }
+            .pickerStyle(.menu)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 2)
     }
@@ -633,6 +687,12 @@ struct SettingsSheet: View {
     @State private var newStoreName = ""
     @State private var showResetAlert = false
     @State private var showPurgeAlert = false
+
+    @FocusState private var newStoreFocused: Bool
+    
+    private func resignKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
 
     var body: some View {
         NavigationStack {
@@ -653,7 +713,7 @@ struct SettingsSheet: View {
                         Text("Extra groot").tag(1.25)
                         Text("Zeer groot").tag(1.35)
                     }
-                    Toggle("Toon prijsveld bij toevoegen", isOn: $store.state.settings.showPrice)
+                    Toggle("Werk met prijzen", isOn: $store.state.settings.showPrice)
                         .tint(.blue)
                     Text("Als uit, voeg je items toe zonder prijs. (Totaal blijft €0 totdat je prijzen invult.)").font(.footnote).foregroundStyle(.secondary)
                 }
@@ -661,7 +721,13 @@ struct SettingsSheet: View {
                 Section(header: Text("Winkels beheren")) {
                     HStack {
                         TextField("Nieuwe winkelnaam", text: $newStoreName)
-                        Button("Winkel toevoegen") { store.addStore(newStoreName); newStoreName = "" }
+                            .focused($newStoreFocused)
+                        Button("Winkel toevoegen") {
+                            newStoreFocused = false
+                            resignKeyboard()
+                            store.addStore(newStoreName)
+                            newStoreName = ""
+                        }
                     }
                     FlowStores(stores: store.state.settings.stores, onDelete: { s in store.removeStore(s) })
                     Button("Standaard winkels herstellen") { store.resetStoresToDefault() }
@@ -672,6 +738,11 @@ struct SettingsSheet: View {
                     Button(role: .destructive) { showResetAlert = true } label: { Text("Alles resetten (items + instellingen)") }
                     Button(role: .destructive) { showPurgeAlert = true } label: { Text("Alle data verwijderen") }
                 }
+            }
+            .scrollDismissesKeyboard(.immediately)
+            .onTapGesture {
+                newStoreFocused = false
+                resignKeyboard()
             }
             .navigationTitle("Instellingen")
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Bewaren") { dismiss() }.bold() } }

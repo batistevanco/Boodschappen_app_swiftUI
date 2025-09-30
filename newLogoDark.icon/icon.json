@@ -1,32 +1,19 @@
 {
   "fill" : {
-    "linear-gradient" : [
-      "display-p3:0.66713,0.88970,1.00000,1.00000",
-      "display-p3:0.98303,1.00000,0.97719,1.00000"
-    ],
-    "orientation" : {
-      "start" : {
-        "x" : 0.5,
-        "y" : 1
-      },
-      "stop" : {
-        "x" : 0.5,
-        "y" : 0.3
-      }
-    }
+    "automatic-gradient" : "extended-gray:1.00000,1.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
           "glass" : false,
-          "image-name" : "boodschappen_app_logo.svg",
-          "name" : "boodschappen_app_logo",
+          "image-name" : "4.svg",
+          "name" : "4",
           "position" : {
-            "scale" : 3.5,
+            "scale" : 4,
             "translation-in-points" : [
-              0,
-              0
+              83.6640625,
+              -57.937971044493
             ]
           }
         }

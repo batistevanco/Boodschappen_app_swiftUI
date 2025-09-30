@@ -1,19 +1,19 @@
 {
   "fill" : {
-    "automatic-gradient" : "display-p3:0.93154,0.93793,0.96783,1.00000"
+    "automatic-gradient" : "extended-gray:1.00000,1.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
           "glass" : false,
-          "image-name" : "Boodschappen_app_logo_dark.svg",
-          "name" : "Boodschappen_app_logo_dark",
+          "image-name" : "3.svg",
+          "name" : "3",
           "position" : {
-            "scale" : 3.5,
+            "scale" : 4,
             "translation-in-points" : [
-              0,
-              0
+              68.5078125,
+              -41.6953125
             ]
           }
         }
