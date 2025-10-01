@@ -691,6 +691,7 @@ struct SettingsSheet: View {
 
     @FocusState private var newStoreFocused: Bool
     @State private var isShowingInfo = false
+    @AppStorage("dismissedSettingsInfoHint") private var dismissedSettingsInfoHint: Bool = false
     
     private func resignKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -699,6 +700,25 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if !dismissedSettingsInfoHint {
+                    Section {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "info.circle.fill")
+                                .font(.title3)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Wist je dit?")
+                                    .font(.headline)
+                                Text("Extra uitleg over hoe de app werkt vind je via de **Info**‑knop hierboven.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("OK") { withAnimation { dismissedSettingsInfoHint = true } }
+                                .buttonStyle(.bordered)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
                 Section(header: Text("Weergave")) {
                     Picker("Valuta", selection: $store.state.settings.currency) {
                         Text("EUR (€)").tag("EUR")
@@ -737,6 +757,13 @@ struct SettingsSheet: View {
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("Instellingen")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.backward")
+                    }
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         isShowingInfo = true
