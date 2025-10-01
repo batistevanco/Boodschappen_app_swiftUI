@@ -690,6 +690,7 @@ struct SettingsSheet: View {
     @State private var showPurgeAlert = false
 
     @FocusState private var newStoreFocused: Bool
+    @State private var isShowingInfo = false
     
     private func resignKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -735,7 +736,18 @@ struct SettingsSheet: View {
             }
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("Instellingen")
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Bewaren") { dismiss() }.bold() } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        isShowingInfo = true
+                    } label: {
+                        Label("Info", systemImage: "info.circle")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Bewaren") { dismiss() }.bold()
+                }
+            }
             // Removed keyboard toolbar with "Gereed" button
             .alert("Alles resetten?", isPresented: $showResetAlert) {
                 Button("Annuleer", role: .cancel) {}
@@ -745,6 +757,48 @@ struct SettingsSheet: View {
                 Button("Annuleer", role: .cancel) {}
                 Button("Verwijderen", role: .destructive) { store.purgeAll() }
             } message: { Text("Dit wist je volledige lijst + instellingen uit UserDefaults.") }
+            .sheet(isPresented: $isShowingInfo) {
+                NavigationStack {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Group {
+                                Text("Welkom bij de Boodschappen app")
+                                    .font(.title2).bold()
+                                Text("Met deze app beheer je je boodschappenlijst met winkels, prijzen en totalen.")
+                            }
+                            Divider()
+                            Group {
+                                Text("📝 Items toevoegen")
+                                    .font(.headline)
+                                Text("Voeg snel nieuwe boodschappen toe met naam, aantal, prijs en winkel. Terugkeerbare items blijven behouden na maandwissels.")
+                            }
+                            Group {
+                                Text("📊 Totalen & maandbeheer")
+                                    .font(.headline)
+                                Text("Bekijk totalen onderaan. Je kunt **Volgende week** of **Volgende maand** starten, waarbij niet-terugkerende items gewist worden.")
+                            }
+                            Group {
+                                Text("🏪 Winkels beheren")
+                                    .font(.headline)
+                                Text("Beheer je lijst met winkels in dit instellingenmenu. Items van verwijderde winkels worden naar 'Algemeen' verplaatst.")
+                            }
+                            Group {
+                                Text("🎨 Weergave")
+                                    .font(.headline)
+                                Text("Kies je valuta, thema (systeem/licht/donker) en of je met prijzen werkt.")
+                            }
+                            Group {
+                                Text("💾 Data opslag")
+                                    .font(.headline)
+                                Text("Alle gegevens worden lokaal opgeslagen in UserDefaults. Je kunt alles wissen of resetten vanuit dit menu.")
+                            }
+                        }
+                        .padding()
+                    }
+                    .navigationTitle("Hoe werkt de app?")
+                    .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Sluit") { isShowingInfo = false } } }
+                }
+            }
         }
     }
 }
