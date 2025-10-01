@@ -8,6 +8,7 @@
 
 import SwiftUI
 import Combine
+import MessageUI
 
 // MARK: - Models
 struct GroceryItem: Identifiable, Codable, Equatable {
@@ -692,9 +693,47 @@ struct SettingsSheet: View {
     @FocusState private var newStoreFocused: Bool
     @State private var isShowingInfo = false
     @AppStorage("dismissedSettingsInfoHint") private var dismissedSettingsInfoHint: Bool = false
+    @State private var showingMailSheet = false
+    @State private var mailFallbackFailed = false
     
     private func resignKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    private func defaultSupportBody() -> String {
+        #if canImport(UIKit)
+        let device = UIDevice.current
+        let system = "iOS \(device.systemVersion)"
+        let model = device.model
+        #else
+        let system = "iOS"
+        let model = "Unknown"
+        #endif
+        let currency = store.state.settings.currency
+        let theme = store.state.settings.theme.rawValue
+        return "Beschrijf hier je vraag of probleem...\n\n— App info —\nValuta: \(currency)\nThema: \(theme)\n— Device —\nModel: \(model)\nSysteem: \(system)\n"
+    }
+
+    // Helper to send support email, to reduce closure complexity
+    private func sendSupportEmail() {
+        #if canImport(UIKit)
+        if MFMailComposeViewController.canSendMail() {
+            showingMailSheet = true
+        } else {
+            let subject = "Boodschappen – Support"
+            let body = defaultSupportBody().addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            let to = "info@vancoillieithulp.be"
+            if let url = URL(string: "mailto:\(to)?subject=\(subject.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")&body=\(body)") {
+                if UIApplication.shared.canOpenURL(url) {
+                    UIApplication.shared.open(url)
+                } else {
+                    mailFallbackFailed = true
+                }
+            } else {
+                mailFallbackFailed = true
+            }
+        }
+        #endif
     }
 
     var body: some View {
@@ -753,6 +792,20 @@ struct SettingsSheet: View {
                     Button(role: .destructive) { showResetAlert = true } label: { Text("Alles resetten (items + instellingen)") }
                     Button(role: .destructive) { showPurgeAlert = true } label: { Text("Alle data verwijderen") }
                 }
+
+                // --- Support section at the very bottom ---
+                Section {
+                    Button {
+                        sendSupportEmail()
+                    } label: {
+                        Label("Meld een probleem", systemImage: "envelope.badge")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } footer: {
+                    Text("Lukt e-mail niet? Mail ons dan rechtstreeks op info@vancoillieithulp.be.")
+                }
+                // --- End of Support section ---
             }
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("Instellingen")
@@ -826,6 +879,18 @@ struct SettingsSheet: View {
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Sluit") { isShowingInfo = false } } }
                 }
             }
+            .sheet(isPresented: $showingMailSheet) {
+                MailView(
+                    to: ["info@vancoillieithulp.be"],
+                    subject: "Boodschappen – Support",
+                    body: defaultSupportBody()
+                )
+            }
+            .alert("E-mail kon niet geopend worden", isPresented: $mailFallbackFailed) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Mail ons op info@vancoillieithulp.be.")
+            }
         }
     }
 }
@@ -854,3 +919,28 @@ struct FlowStores: View {
 }
 
 #Preview { ContentView() }
+
+struct MailView: UIViewControllerRepresentable {
+    var to: [String]
+    var subject: String
+    var body: String
+
+    class Coordinator: NSObject, MFMailComposeViewControllerDelegate {
+        func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
+            controller.dismiss(animated: true)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIViewController(context: Context) -> MFMailComposeViewController {
+        let vc = MFMailComposeViewController()
+        vc.setToRecipients(to)
+        vc.setSubject(subject)
+        vc.setMessageBody(body, isHTML: false)
+        vc.mailComposeDelegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: MFMailComposeViewController, context: Context) { }
+}
