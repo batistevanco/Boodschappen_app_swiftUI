@@ -46,7 +46,20 @@ enum ViewMode: String { case all, store }
 enum Defaults {
     static let userDefaultsKey = "bb2_state_v1"
     static let defaultStores = ["Algemeen","Colruyt","Delhaize","ALDI","Lidl","Carrefour","Action","Kruidvat","Andere"]
-    static func monthKey(_ d: Date = .init()) -> String { let c = Calendar.current; let y = c.component(.year, from: d); let m = c.component(.month, from: d); return String(format: "%04d-%02d", y, m) }
+    static func monthKey(_ d: Date = .init()) -> String {
+        let c = Calendar.current
+        let y = c.component(.year, from: d)
+        let m = c.component(.month, from: d)
+        return String(format: "%04d-%02d", y, m)
+    }
+    /// Parse a YYYY-MM key to the first day of that month (local calendar)
+    static func dateFromMonthKey(_ key: String) -> Date? {
+        let parts = key.split(separator: "-")
+        guard parts.count == 2, let y = Int(parts[0]), let m = Int(parts[1]) else { return nil }
+        var dc = DateComponents()
+        dc.year = y; dc.month = m; dc.day = 1
+        return Calendar.current.date(from: dc)
+    }
 }
 
 extension Double { var two: Double { (self + .ulpOfOne).rounded(.toNearestOrEven) } }
@@ -165,11 +178,24 @@ final class AppStore: ObservableObject {
     func nextMonth() {
         state.items.removeAll { !$0.recurring }
         state.monthTotal = 0
-        if let next = Calendar.current.date(byAdding: .month, value: 1, to: Date()) {
-            state.month = Defaults.monthKey(next)
-        } else {
-            state.month = Defaults.monthKey()
-        }
+        let cal = Calendar.current
+        let base = Defaults.dateFromMonthKey(state.month) ?? Date()
+        // always advance from the first day of the current state month
+        let firstOfBase = cal.date(from: cal.dateComponents([.year, .month], from: base)) ?? base
+        let next = cal.date(byAdding: .month, value: 1, to: firstOfBase) ?? base
+        state.month = Defaults.monthKey(next)
+        persist()
+    }
+
+    func prevMonth() {
+        state.items.removeAll { !$0.recurring }
+        state.monthTotal = 0
+        let cal = Calendar.current
+        let base = Defaults.dateFromMonthKey(state.month) ?? Date()
+        // always go to the first day of the current state month, then -1 month
+        let firstOfBase = cal.date(from: cal.dateComponents([.year, .month], from: base)) ?? base
+        let prev = cal.date(byAdding: .month, value: -1, to: firstOfBase) ?? base
+        state.month = Defaults.monthKey(prev)
         persist()
     }
 
@@ -204,6 +230,13 @@ struct ContentView: View {
     @State private var recurring = false
     @FocusState private var focusedField: Field?
     private enum Field { case name, qty, price }
+
+    // Helper om het toetsenbord te sluiten
+    private func resignKeyboard() {
+        #if canImport(UIKit)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
+    }
 
     // Precomputed helpers to keep the body simpler (helps the type-checker)
     private var storeListComputed: [String] {
@@ -264,7 +297,7 @@ struct ContentView: View {
 
             addCard
                 .padding(.horizontal, 12)
-                .padding(.bottom, 24) // content is inset by safeAreaInset(bottom:)
+                .padding(.bottom, 140) // extra bodemruimte zodat de vaste balk niets overlapt
         }
     }
 
@@ -277,19 +310,25 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollViewReader { _ in
-                ScrollView {
-                    scrollContent
+        ZStack(alignment: .bottom) {
+            NavigationStack {
+                ScrollViewReader { _ in
+                    ScrollView {
+                        scrollContent
+                    }
+                    .scrollDismissesKeyboard(.immediately)
                 }
-                .scrollDismissesKeyboard(.immediately)
+                .navigationTitle("🛒 InMandje")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Instellingen") { showSettings = true } } }
             }
+
+            // Bottom bar is now inset to stay above the keyboard, but hidden when a text field is focused
             .safeAreaInset(edge: .bottom) {
-                totalsBar
+                if focusedField == nil {
+                    totalsBar
+                }
             }
-            .navigationTitle("🛒 InMandje")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Instellingen") { showSettings = true } } }
         }
         .preferredColorScheme(resolvedColorScheme)
         .sheet(isPresented: $showSettings) { SettingsSheet(store: store) }
@@ -306,9 +345,7 @@ struct ContentView: View {
                 }
                 .navigationTitle("Maand instellen")
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button("Annuleer") { showMonthPicker = false }
-                    }
+                    ToolbarItem(placement: .topBarLeading) { Button("Annuleer") { showMonthPicker = false } }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Zet maand") {
                             store.setMonth(monthPickerDate, resetItems: true)
@@ -318,7 +355,9 @@ struct ContentView: View {
                 }
             }
         }
-        .sheet(item: $editTarget) { item in EditItemSheet(item: item, currency: store.state.settings.currency, stores: store.state.settings.stores) { updated in store.updateItem(updated) } }
+        .sheet(item: $editTarget) { item in
+            EditItemSheet(item: item, currency: store.state.settings.currency, stores: store.state.settings.stores) { updated in store.updateItem(updated) }
+        }
         .onAppear {
             store.ensureMonth()
             if let first = store.state.settings.stores.first { selectedStore = first }
@@ -327,13 +366,13 @@ struct ContentView: View {
 
     // MARK: Subviews
     private var topToolbar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 20) {
             Picker("Weergave", selection: $viewMode) {
                 Text("Alle").tag(ViewMode.all)
                 Text("Per winkel").tag(ViewMode.store)
             }
             .pickerStyle(.segmented)
-            Spacer(minLength: 8)
+            Spacer(minLength: 5)
             Button {
                 monthPickerDate = Date()
                 showMonthPicker = true
@@ -346,6 +385,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
         }
+        
     }
 
     private var addCard: some View {
@@ -431,36 +471,35 @@ struct ContentView: View {
                 .padding(.horizontal, 12)
             }
 
-            HStack(spacing: 15) {
+            HStack(spacing: 10) {
                 Button {
                     let added = store.nextWeek()
                     showInfoAlert(title: "+\(MoneyFormatter.string(added, currency: store.state.settings.currency)) toegevoegd aan Totaal deze maand.")
                 } label: {
-                    Text("Volgende week")
-                        .fontWeight(.semibold)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
+                    Label("Volgende week", systemImage: "calendar.badge.plus")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .buttonBorderShape(.capsule)
-                .padding(.vertical, 4)
 
                 Button {
                     store.nextMonth()
                     showInfoAlert(title: "Nieuwe maand gestart. Totaal deze maand is gereset.")
                 } label: {
-                    Text("Volgende maand")
-                        .fontWeight(.semibold)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
+                    Label("Volgende maand", systemImage: "calendar")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 6)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .buttonBorderShape(.capsule)
-                .padding(.vertical, 4)
             }
-            .padding(.top, 6)
-            .padding(.horizontal, 15)
-            .padding(.bottom, 2 )
+            .padding(.top, 4)
+            .padding(.bottom, 0)
         }
         .padding(.top, 8)
         .frame(maxWidth: .infinity)
@@ -470,11 +509,13 @@ struct ContentView: View {
                 UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
                     .fill(store.state.settings.showPrice ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.secondary.opacity(0.08)))
                     .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
             )
             .overlay(
                 UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
                     .stroke(Color.secondary.opacity(0.15))
                     .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
             )
     }
 
@@ -685,6 +726,7 @@ struct SettingsSheet: View {
     @State private var newStoreName = ""
     @State private var showResetAlert = false
     @State private var showPurgeAlert = false
+    @State private var showPrevMonthAlert = false
 
     @FocusState private var newStoreFocused: Bool
     @State private var isShowingInfo = false
@@ -784,6 +826,14 @@ struct SettingsSheet: View {
                 }
 
                 Section(header: Text("Gegevens")) {
+                    Button("Vorige maand") {
+                        store.prevMonth()
+                        #if canImport(UIKit)
+                        let generator = UINotificationFeedbackGenerator()
+                        generator.notificationOccurred(.success)
+                        #endif
+                        showPrevMonthAlert = true
+                    }
                     Button(role: .destructive) { store.clearMonth() } label: { Text("Maand wissen") }
                     Button(role: .destructive) { showResetAlert = true } label: { Text("Alles resetten (items + instellingen)") }
                     Button(role: .destructive) { showPurgeAlert = true } label: { Text("Alle data verwijderen") }
@@ -829,6 +879,11 @@ struct SettingsSheet: View {
                 Button("Annuleer", role: .cancel) {}
                 Button("Reset", role: .destructive) { store.state = AppState() }
             } message: { Text("Dit zet items en instellingen terug naar standaard.") }
+            .alert("Vorige maand ingesteld", isPresented: $showPrevMonthAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Je bekijkt nu \(store.state.month).")
+            }
             .alert("ALLE data verwijderen?", isPresented: $showPurgeAlert) {
                 Button("Annuleer", role: .cancel) {}
                 Button("Verwijderen", role: .destructive) { store.purgeAll() }
