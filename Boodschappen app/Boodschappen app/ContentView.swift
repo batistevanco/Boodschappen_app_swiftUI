@@ -264,7 +264,7 @@ struct ContentView: View {
 
             addCard
                 .padding(.horizontal, 12)
-                .padding(.bottom, 160) // leave space for sticky totals
+                .padding(.bottom, 24) // content is inset by safeAreaInset(bottom:)
         }
     }
 
@@ -278,21 +278,18 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                ScrollViewReader { _ in
-                    ScrollView {
-                        scrollContent
-                    }
-                    .scrollDismissesKeyboard(.immediately)
+            ScrollViewReader { _ in
+                ScrollView {
+                    scrollContent
                 }
-
-                // Sticky totals bottom bar (altijd zichtbaar; KPI's conditioneel)
+                .scrollDismissesKeyboard(.immediately)
+            }
+            .safeAreaInset(edge: .bottom) {
                 totalsBar
             }
             .navigationTitle("🛒 InMandje")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Instellingen") { showSettings = true } } }
-            // Removed keyboard toolbar with "Gereed" button
         }
         .preferredColorScheme(resolvedColorScheme)
         .sheet(isPresented: $showSettings) { SettingsSheet(store: store) }
@@ -421,65 +418,64 @@ struct ContentView: View {
     }
 
     private var totalsBar: some View {
-        VStack {
-            Spacer()
-            // The bar content itself
-            let barContent = VStack(spacing: 10) {
-                // KPI's alleen wanneer prijzen zichtbaar zijn
-                if store.state.settings.showPrice {
-                    HStack(spacing: 10) {
-                        KPI(title: "Totaal (zicht)", value: MoneyFormatter.string(totalVisible, currency: store.state.settings.currency))
-                        KPI(title: "Totaal (alle winkels)", value: MoneyFormatter.string(totalAll, currency: store.state.settings.currency))
-                        KPI(title: "Totaal deze maand", value: MoneyFormatter.string(store.state.monthTotal, currency: store.state.settings.currency))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 12)
+        // The bar content itself
+        let barContent = VStack(spacing: 10) {
+            // KPI's alleen wanneer prijzen zichtbaar zijn
+            if store.state.settings.showPrice {
+                HStack(spacing: 10) {
+                    KPI(title: "Totaal (zicht)", value: MoneyFormatter.string(totalVisible, currency: store.state.settings.currency))
+                    KPI(title: "Totaal (alle winkels)", value: MoneyFormatter.string(totalAll, currency: store.state.settings.currency))
+                    KPI(title: "Totaal deze maand", value: MoneyFormatter.string(store.state.monthTotal, currency: store.state.settings.currency))
                 }
-
-                HStack(spacing: 15) {
-                    Button { let added = store.nextWeek();
-                        showInfoAlert(title: "+\(MoneyFormatter.string(added, currency: store.state.settings.currency)) toegevoegd aan Totaal deze maand.")
-                    } label: {
-                        Text("Volgende week")
-                            .fontWeight(.semibold)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
-                    .padding(.vertical, 4)
-
-                    Button { store.nextMonth(); showInfoAlert(title: "Nieuwe maand gestart. Totaal deze maand is gereset.") } label: {
-                        Text("Volgende maand")
-                            .fontWeight(.semibold)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
-                    .padding(.vertical, 4)
-                }
-                .padding(.top, 6)
-                .padding(.horizontal, 15)
-                .padding(.bottom, 28)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12)
             }
-            .padding(.top, 8)
-            .frame(maxWidth: .infinity)
 
-            // Apply background material ONLY to the height of the bar, and only when prices are on
-            barContent
-                .background(
-                    UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
-                        .fill(store.state.settings.showPrice ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.secondary.opacity(0.08)))
-                        .ignoresSafeArea(edges: .bottom)
-                )
-                .overlay(
-                    UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
-                        .stroke(Color.secondary.opacity(0.15))
-                        .ignoresSafeArea(edges: .bottom)
-                )
+            HStack(spacing: 15) {
+                Button {
+                    let added = store.nextWeek()
+                    showInfoAlert(title: "+\(MoneyFormatter.string(added, currency: store.state.settings.currency)) toegevoegd aan Totaal deze maand.")
+                } label: {
+                    Text("Volgende week")
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .padding(.vertical, 4)
+
+                Button {
+                    store.nextMonth()
+                    showInfoAlert(title: "Nieuwe maand gestart. Totaal deze maand is gereset.")
+                } label: {
+                    Text("Volgende maand")
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .padding(.vertical, 4)
+            }
+            .padding(.top, 6)
+            .padding(.horizontal, 15)
+            .padding(.bottom, 2 )
         }
-        .ignoresSafeArea(edges: .bottom)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity)
+
+        return barContent
+            .background(
+                UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
+                    .fill(store.state.settings.showPrice ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.secondary.opacity(0.08)))
+                    .ignoresSafeArea(edges: .bottom)
+            )
+            .overlay(
+                UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
+                    .stroke(Color.secondary.opacity(0.15))
+                    .ignoresSafeArea(edges: .bottom)
+            )
     }
 
     private func showInfoAlert(title: String) {
