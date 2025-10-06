@@ -721,6 +721,7 @@ struct StoreFilterView: View {
 // MARK: - Settings Sheet
 struct SettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @ObservedObject var store: AppStore
 
     @State private var newStoreName = ""
@@ -922,6 +923,21 @@ struct SettingsSheet: View {
                                 Text("💾 Data opslag")
                                     .font(.headline)
                                 Text("Alle gegevens worden lokaal opgeslagen in UserDefaults. Je kunt alles wissen of resetten vanuit dit menu.")
+                            }
+                            Group {
+                                Text("Privacy Policy")
+                                    .font(.headline)
+
+                                Button {
+                                    if let url = URL(string: "https://www.vancoillieithulp.be/privacyPolicyInMandje.html") {
+                                        openURL(url)
+                                    }
+                                } label: {
+                                    Label("Bekijk privacy policy", systemImage: "lock.doc")
+                                        .font(.body)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(.accentColor)
                             }
                         }
                         .padding()
