@@ -45,7 +45,7 @@ enum ViewMode: String { case all, store }
 // MARK: - Defaults & Helpers
 enum Defaults {
     static let userDefaultsKey = "bb2_state_v1"
-    static let defaultStores = ["Algemeen","Colruyt","Delhaize","ALDI","Lidl","Carrefour","Action","Kruidvat","Andere"]
+    static let defaultStores = ["Algemeen","Colruyt","Delhaize","Aldi","Lidl","Carrefour","Action","Kruidvat","Andere"]
     static func monthKey(_ d: Date = .init()) -> String {
         let c = Calendar.current
         let y = c.component(.year, from: d)
@@ -221,6 +221,7 @@ struct ContentView: View {
     @State private var editTarget: GroceryItem? = nil
     @State private var showMonthPicker = false
     @State private var monthPickerDate = Date()
+    @State private var showAIChat = false
 
     // Add form state
     @State private var name = ""
@@ -320,7 +321,18 @@ struct ContentView: View {
                 }
                 .navigationTitle("🛒 InMandje")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Instellingen") { showSettings = true } } }
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        HStack(spacing: 14) {
+                            Button {
+                                showAIChat = true
+                            } label: {
+                                Label("AI", systemImage: "sparkles")
+                            }
+                            Button("Instellingen") { showSettings = true }
+                        }
+                    }
+                }
             }
 
             // Bottom bar is now inset to stay above the keyboard, but hidden when a text field is focused
@@ -354,6 +366,29 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showAIChat) {
+            GroceryAIChatView()
+                .onAppear {
+                    GroceryAIChatBridge.shared.handlers = .init(
+                        getItems: { store.state.items },
+                        addItem: { name, qty, unitPrice, storeName in
+                            self.store.addItem(
+                                name: name,
+                                qty: qty,
+                                unitPrice: unitPrice,
+                                store: storeName,
+                                recurring: false
+                            )
+                        },
+                        getMonthCarry: { store.state.monthTotal },
+                        currencySymbol: { currencySymbol(self.store.state.settings.currency) },
+                        currencyCode: { self.store.state.settings.currency }
+                    )
+                }
+                .onDisappear {
+                    GroceryAIChatBridge.shared.handlers = nil
+                }
         }
         .sheet(item: $editTarget) { item in
             EditItemSheet(item: item, currency: store.state.settings.currency, stores: store.state.settings.stores) { updated in store.updateItem(updated) }
