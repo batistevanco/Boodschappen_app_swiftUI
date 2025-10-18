@@ -810,6 +810,24 @@ struct SettingsSheet: View {
         #endif
     }
 
+    private func appDisplayName() -> String {
+        if let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String, !name.isEmpty {
+            return name
+        }
+        if let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String, !name.isEmpty {
+            return name
+        }
+        return "Boodschappen"
+    }
+
+    private func appVersionString() -> String {
+        let ver = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String, build.isEmpty == false {
+            return "\(ver) (\(build))"
+        }
+        return ver
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -875,6 +893,24 @@ struct SettingsSheet: View {
                     Button(role: .destructive) { showPurgeAlert = true } label: { Text("Alle data verwijderen") }
                 }
 
+                Section(header: Text("Versie"), footer: Text("Gemaakt door Vancoillie Studio")) {
+                    HStack {
+                        Text("App naam")
+                        Spacer()
+                        Text(appDisplayName())
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .accessibilityIdentifier("about_app_name")
+
+                    HStack {
+                        Text("Versie")
+                        Spacer()
+                        Text(appVersionString())
+                            .monospaced()
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .accessibilityIdentifier("about_app_version")
+                }
                 // --- Support section at the very bottom ---
                 Section {
                     Button {
