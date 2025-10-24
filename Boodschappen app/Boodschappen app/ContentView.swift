@@ -796,7 +796,7 @@ struct SettingsSheet: View {
         } else {
             let subject = "Boodschappen – Support"
             let body = defaultSupportBody().addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-            let to = "info@vancoillieithulp.be"
+            let to = "support@vancoilliestudio.be"
             if let url = URL(string: "mailto:\(to)?subject=\(subject.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")&body=\(body)") {
                 if UIApplication.shared.canOpenURL(url) {
                     UIApplication.shared.open(url)
@@ -921,7 +921,7 @@ struct SettingsSheet: View {
                     }
                     .buttonStyle(.borderedProminent)
                 } footer: {
-                    Text("Lukt e-mail niet? Mail ons dan rechtstreeks op info@vancoillieithulp.be.")
+                    Text("Lukt e-mail niet? Mail ons dan rechtstreeks op support@vancoilliestudio.be.")
                 }
                 // --- End of Support section ---
             }
@@ -1019,7 +1019,7 @@ struct SettingsSheet: View {
             }
             .sheet(isPresented: $showingMailSheet) {
                 MailView(
-                    to: ["info@vancoillieithulp.be"],
+                    to: ["support@vancoilliestudio.be"],
                     subject: "Boodschappen – Support",
                     body: defaultSupportBody()
                 )
@@ -1027,7 +1027,7 @@ struct SettingsSheet: View {
             .alert("E-mail kon niet geopend worden", isPresented: $mailFallbackFailed) {
                 Button("OK", role: .cancel) { }
             } message: {
-                Text("Mail ons op info@vancoillieithulp.be.")
+                Text("Mail ons op support@vancoilliestudio.be.")
             }
         }
     }
