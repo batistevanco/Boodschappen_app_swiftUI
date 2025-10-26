@@ -250,15 +250,17 @@ struct ContentView: View {
 
     @ViewBuilder
     private func row(for it: GroceryItem) -> some View {
-        ItemRow(
-            item: it,
-            currency: store.state.settings.currency,
-            showAmounts: store.state.settings.showPrice,
-            onChange: handleChange,
-            onEdit: { editTarget = it },
-            onDelete: { deleteItem(id: it.id) }
-        )
-        Divider().overlay(Color.secondary.opacity(0.15))
+        if let index = store.state.items.firstIndex(where: { $0.id == it.id }) {
+            ItemRow(
+                item: $store.state.items[index],
+                currency: store.state.settings.currency,
+                showAmounts: store.state.settings.showPrice,
+                onChange: handleChange,
+                onEdit: { editTarget = it },
+                onDelete: { deleteItem(id: it.id) }
+            )
+            Divider().overlay(Color.secondary.opacity(0.15))
+        }
     }
 
     // The list card extracted so the body stays small
@@ -271,8 +273,20 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                     .padding(24)
             } else {
-                ForEach(items, id: \.id) { it in
-                    row(for: it)
+                // Toon enkel de gefilterde items, maar behoud bindings met de store
+                let visibleIDs = Set(items.map { $0.id })
+                ForEach(store.state.items.indices, id: \.self) { i in
+                    if visibleIDs.contains(store.state.items[i].id) {
+                        ItemRow(
+                            item: $store.state.items[i],
+                            currency: store.state.settings.currency,
+                            showAmounts: store.state.settings.showPrice,
+                            onChange: handleChange,
+                            onEdit: { editTarget = store.state.items[i] },
+                            onDelete: { deleteItem(id: store.state.items[i].id) }
+                        )
+                        Divider().overlay(Color.secondary.opacity(0.15))
+                    }
                 }
             }
         }
@@ -597,28 +611,12 @@ struct ContentView: View {
 
 // MARK: - Item Row
 struct ItemRow: View {
-    @State var item: GroceryItem
+    @Binding var item: GroceryItem
     let currency: String
     let showAmounts: Bool
     var onChange: (GroceryItem) -> Void
     var onEdit: () -> Void
     var onDelete: () -> Void
-
-    init(
-        item: GroceryItem,
-        currency: String,
-        showAmounts: Bool,
-        onChange: @escaping (GroceryItem) -> Void,
-        onEdit: @escaping () -> Void,
-        onDelete: @escaping () -> Void
-    ) {
-        self._item = State(initialValue: item)
-        self.currency = currency
-        self.showAmounts = showAmounts
-        self.onChange = onChange
-        self.onEdit = onEdit
-        self.onDelete = onDelete
-    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -698,11 +696,34 @@ struct EditItemSheet: View {
         NavigationStack {
             Form {
                 Section(header: Text("Item")) {
-                    TextField("Naam", text: $name)
-                    TextField("Aantal", text: $qty).keyboardType(.decimalPad)
-                    TextField("Prijs/stuk (\(currencySymbol(currency)))", text: $price).keyboardType(.decimalPad)
-                    Picker("Winkel", selection: $store) { ForEach(stores, id: \.self) { Text($0).tag($0) } }
-                    Toggle("Terugkeerbaar", isOn: $recurring)
+                    VStack(spacing: 14) {
+                        Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                            // Naam
+                            GridRow {
+                                EditStyledTextField(text: $name, prompt: "bv. Appels")
+                                EditRightLabel("Naam")
+                            }
+                            // Aantal
+                            GridRow {
+                                EditStyledTextField(text: $qty, prompt: "Aantal")
+                                    .keyboardType(.decimalPad)
+                                EditRightLabel("Aantal")
+                            }
+                            // Prijs/stuk
+                            GridRow {
+                                EditStyledTextField(text: $price, prompt: "Prijs/stuk (\(currencySymbol(currency)))")
+                                    .keyboardType(.decimalPad)
+                                EditRightLabel("Prijs/stuk")
+                            }
+                            // Winkel
+                            GridRow {
+                                EditStyledPicker(selection: $store, options: stores, prompt: "Kies…")
+                                EditRightLabel("Winkel")
+                            }
+                        }
+                        // Toggle onder de grid
+                        Toggle("Terugkeerbaar", isOn: $recurring)
+                    }
                 }
                 Section(footer: Text("Aangemaakt: \(item.createdAt.formatted(date: .abbreviated, time: .shortened))")) { EmptyView() }
             }
@@ -731,6 +752,59 @@ struct EditItemSheet: View {
     }
 
     private func format(_ n: Double) -> String { if n == floor(n) { return String(Int(n)) } else { return String(format: "%.2f", n) } }
+}
+
+// --- EditItemSheet helper views ---
+private struct EditRightLabel: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(width: 90, alignment: .trailing) // vaste breedte voor nette uitlijning
+    }
+}
+
+private struct EditStyledTextField: View {
+    @Binding var text: String
+    var prompt: String
+    var body: some View {
+        TextField("", text: $text, prompt: Text(prompt))
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.secondary.opacity(0.2))
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct EditStyledPicker: View {
+    @Binding var selection: String
+    var options: [String]
+    var prompt: String = "Kies…"
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.self) { opt in
+                Button(opt) { selection = opt }
+            }
+        } label: {
+            HStack {
+                Text(selection.isEmpty ? prompt : selection)
+                    .foregroundStyle(selection.isEmpty ? .secondary : .primary)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.footnote)
+            }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.secondary.opacity(0.2))
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
 
 // MARK: - Store Filter Wrap
