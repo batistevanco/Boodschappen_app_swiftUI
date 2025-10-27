@@ -837,6 +837,7 @@ struct SettingsSheet: View {
     @State private var showResetAlert = false
     @State private var showPurgeAlert = false
     @State private var showPrevMonthAlert = false
+    @State private var showClearMonthAlert = false
 
     @FocusState private var newStoreFocused: Bool
     @State private var isShowingInfo = false
@@ -962,7 +963,7 @@ struct SettingsSheet: View {
                         #endif
                         showPrevMonthAlert = true
                     }
-                    Button(role: .destructive) { store.clearMonth() } label: { Text("Maand wissen") }
+                    Button(role: .destructive) { showClearMonthAlert = true } label: { Text("Maand wissen") }
                     Button(role: .destructive) { showResetAlert = true } label: { Text("Alles resetten (items + instellingen)") }
                     Button(role: .destructive) { showPurgeAlert = true } label: { Text("Alle data verwijderen") }
                 }
@@ -1029,6 +1030,12 @@ struct SettingsSheet: View {
                 Button("OK", role: .cancel) { }
             } message: {
                 Text("Je bekijkt nu \(store.state.month).")
+            }
+            .alert("Maand wissen?", isPresented: $showClearMonthAlert) {
+                Button("Annuleer", role: .cancel) { }
+                Button("Wissen", role: .destructive) { store.clearMonth() }
+            } message: {
+                Text("Niet-terugkerende items worden gewist en het maandtotaal wordt gereset naar 0. Dit kan niet ongedaan worden gemaakt.")
             }
             .alert("ALLE data verwijderen?", isPresented: $showPurgeAlert) {
                 Button("Annuleer", role: .cancel) {}
