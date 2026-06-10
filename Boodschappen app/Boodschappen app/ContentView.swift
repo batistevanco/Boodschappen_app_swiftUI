@@ -38,7 +38,7 @@ struct Settings: Codable, Equatable {
     var currency: String = "EUR"
     var theme: Theme = .system
     var stores: [String] = Defaults.defaultStores
-    var showPrice: Bool = true
+    var showPrice: Bool = false
 }
 
 enum ViewMode: String { case all, store }
@@ -47,6 +47,8 @@ enum ViewMode: String { case all, store }
 
 enum Defaults {
     static let userDefaultsKey = "bb2_state_v1"
+    // Tijdelijk aan voor app screenshots. Zet terug op false of verwijder na de screenshots.
+    static let useScreenshotMockData = true
     static let defaultStores = ["Algemeen","Colruyt","Delhaize","Aldi","Lidl","Carrefour","Action","Kruidvat","Andere"]
     static func monthKey(_ d: Date = .init()) -> String {
         let c = Calendar.current
@@ -90,15 +92,23 @@ func uid() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "")
 struct ContentView: View {
     @StateObject private var store = CloudKitStore()
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var viewMode: ViewMode = .all
     @State private var storeFilter: String = "Alle"
     @State private var showSettings = false
-    @State private var showShare = false
     @State private var showShopMode = false
+    @State private var showFavorites = false
+    @State private var showAddSheet = false
     @State private var editTarget: GroceryItem? = nil
     @State private var showMonthPicker = false
     @State private var monthPickerDate = Date()
+
+    // List management
+    @State private var showCreateList = false
+    @State private var newListName = ""
+    @State private var listToRename: GroceryListMeta? = nil
+    @State private var renameText = ""
 
     @State private var name = ""
     @State private var qty: String = "1"
@@ -119,82 +129,64 @@ struct ContentView: View {
     private func handleChange(_ updated: GroceryItem) { store.updateItem(updated) }
     private func deleteItem(id: String) { store.removeItem(id: id) }
     private var listItems: [GroceryItem] { store.items.filter { !$0.isFavorite } }
-
-    // MARK: - List card
-
-    private var listCard: some View {
-        VStack(spacing: 0) {
-            let items = visibleItems
-            if items.isEmpty {
-                Text("Nog niets hier. Voeg items toe hieronder 👇")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(24)
-            } else {
-                let visibleIDs = Set(items.map { $0.id })
-                ForEach(store.items.indices, id: \.self) { i in
-                    if visibleIDs.contains(store.items[i].id) && !store.items[i].isFavorite {
-                        ItemRow(
-                            item: $store.items[i],
-                            currency: store.settings.currency,
-                            showAmounts: store.settings.showPrice,
-                            onChange: handleChange,
-                            onEdit: { editTarget = store.items[i] },
-                            onDelete: { deleteItem(id: store.items[i].id) }
-                        )
-                        .contextMenu {
-                            Button {
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                store.addFavorite(from: store.items[i])
-                            } label: {
-                                Label("Voeg toe aan favorieten", systemImage: "star.fill")
-                            }
-                            Divider()
-                            Button(role: .destructive) {
-                                deleteItem(id: store.items[i].id)
-                            } label: {
-                                Label("Verwijder", systemImage: "trash")
-                            }
-                        }
-                        Divider().overlay(Color.secondary.opacity(0.15))
-                    }
-                }
-            }
+    private var isDarkMode: Bool { colorScheme == .dark }
+    private var primaryText: Color { isDarkMode ? .white : Color(red: 0.07, green: 0.08, blue: 0.16) }
+    private var secondaryText: Color { primaryText.opacity(isDarkMode ? 0.58 : 0.62) }
+    private var tertiaryText: Color { primaryText.opacity(isDarkMode ? 0.42 : 0.48) }
+    private var cardFill: Color { isDarkMode ? .white.opacity(0.07) : .white.opacity(0.82) }
+    private var fieldFill: Color { isDarkMode ? .white.opacity(0.08) : Color(red: 0.94, green: 0.95, blue: 0.99) }
+    private var subtleStroke: Color { isDarkMode ? .white.opacity(0.09) : Color(red: 0.15, green: 0.17, blue: 0.32).opacity(0.10) }
+    private var appBackground: LinearGradient {
+        LinearGradient(
+            colors: isDarkMode
+            ? [
+                Color(red: 0.04, green: 0.04, blue: 0.10),
+                Color(red: 0.06, green: 0.07, blue: 0.16),
+                Color(red: 0.08, green: 0.07, blue: 0.18)
+            ]
+            : [
+                Color(red: 0.95, green: 0.96, blue: 1.00),
+                Color(red: 0.90, green: 0.93, blue: 1.00),
+                Color(red: 0.98, green: 0.98, blue: 1.00)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+    private var storeOrder: [String] { store.settings.stores }
+    private var groupedVisibleItems: [(store: String, items: [GroceryItem])] {
+        let grouped = Dictionary(grouping: visibleItems, by: \.store)
+        return grouped.keys.sorted { lhs, rhs in
+            let li = storeOrder.firstIndex(of: lhs) ?? Int.max
+            let ri = storeOrder.firstIndex(of: rhs) ?? Int.max
+            if li != ri { return li < ri }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.secondary.opacity(0.15)))
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .padding(12)
+        .compactMap { storeName in
+            guard let items = grouped[storeName] else { return nil }
+            return (
+                store: storeName,
+                items: items.sorted {
+                    if $0.checked != $1.checked { return !$0.checked && $1.checked }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            )
+        }
     }
 
     private var scrollContent: some View {
-        Group {
-            topToolbar
-                .padding(.horizontal, 12)
-                .padding(.top, 8)
+        VStack(spacing: 16) {
+            dashboardHeader
+                .padding(.top, 10)
 
             if viewMode == .store {
                 StoreFilterView(stores: storeListComputed, selection: $storeFilter)
-                    .padding(.horizontal, 12)
             }
 
-            if !store.favorites.isEmpty {
-                FavoritesBar(
-                    favorites: store.favorites,
-                    currency: store.settings.currency,
-                    showPrice: store.settings.showPrice,
-                    onAdd: { store.addFavoriteToList($0) },
-                    onDelete: { store.removeFavorite(id: $0.id) }
-                )
-                .padding(.horizontal, 12)
-            }
-
-            listCard
-
-            addCard
-                .padding(.horizontal, 12)
-                .padding(.bottom, 140)
+            storeCards
         }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 120)
     }
 
     private var resolvedColorScheme: ColorScheme? {
@@ -207,30 +199,87 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
+            appBackground
+                .ignoresSafeArea()
+
             NavigationStack {
-                ScrollView {
-                    scrollContent
+                GeometryReader { proxy in
+                    ScrollView {
+                        scrollContent
+                            .frame(minHeight: proxy.size.height, alignment: .top)
+                    }
                 }
+                .background(Color.clear)
                 .scrollDismissesKeyboard(.immediately)
-                .navigationTitle("🛒 InMandje")
+                .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
                 .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        TodayStatusChip()
+                    }
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        HStack(spacing: 14) {
+                        HStack(spacing: 10) {
                             Button { showShopMode = true } label: {
-                                Label("Winkelen", systemImage: "cart.fill")
+                                Image(systemName: "cart.fill")
                             }
-                            Button { showShare = true } label: {
-                                Label("Delen", systemImage: store.shareURL != nil ? "person.2.fill" : "person.2")
+                            Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                showFavorites = true
+                            } label: {
+                                ZStack(alignment: .topTrailing) {
+                                    Image(systemName: store.favorites.isEmpty ? "star" : "star.fill")
+                                        .foregroundStyle(store.favorites.isEmpty ? primaryText : Color.yellow)
+                                    if !store.favorites.isEmpty {
+                                        Text("\(store.favorites.count)")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundStyle(.white)
+                                            .padding(3)
+                                            .background(Color.orange, in: Circle())
+                                            .offset(x: 6, y: -6)
+                                    }
+                                }
                             }
-                            Button("Instellingen") { showSettings = true }
+                            Button { showSettings = true } label: {
+                                Image(systemName: "gearshape.fill")
+                            }
                         }
+                        .foregroundStyle(primaryText)
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if focusedField == nil { totalsBar }
+
+            // FAB
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    Button {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showAddSheet = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 60, height: 60)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color(red: 0.38, green: 0.35, blue: 0.90),
+                                             Color(red: 0.14, green: 0.55, blue: 0.85)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                in: Circle()
+                            )
+                            .shadow(color: Color(red: 0.38, green: 0.35, blue: 0.90).opacity(0.45),
+                                    radius: 16, y: 6)
+                    }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 100)
+                }
             }
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(true)
         }
         .preferredColorScheme(resolvedColorScheme)
         .fullScreenCover(isPresented: Binding(
@@ -243,7 +292,18 @@ struct ContentView: View {
             ))
         }
         .fullScreenCover(isPresented: $showShopMode) { ShopModeView(store: store) }
-        .sheet(isPresented: $showShare) { ShareListView(store: store) }
+        .sheet(isPresented: $showFavorites) {
+            FavoritesSheet(store: store)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+        }
+        .sheet(isPresented: $showAddSheet) {
+            AddItemSheet(store: store)
+                .presentationDetents([.fraction(0.72), .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+        }
         .sheet(isPresented: $showSettings) { SettingsSheet(store: store) }
         .sheet(isPresented: $showMonthPicker) {
             NavigationStack {
@@ -268,6 +328,14 @@ struct ContentView: View {
         .sheet(item: $editTarget) { item in
             EditItemSheet(item: item, currency: store.settings.currency, stores: store.settings.stores) { store.updateItem($0) }
         }
+        .alert("iCloud fout", isPresented: Binding(
+            get: { store.syncError != nil },
+            set: { if !$0 { store.syncError = nil } }
+        )) {
+            Button("OK", role: .cancel) { store.syncError = nil }
+        } message: {
+            Text(store.syncError ?? "")
+        }
         .onAppear {
             store.ensureMonth()
             if let first = store.settings.stores.first { selectedStore = first }
@@ -282,6 +350,253 @@ struct ContentView: View {
                     }
                     .padding(20)
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
+        }
+    }
+
+    // MARK: - Dashboard
+
+    private var dashboardHeader: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("InMandje")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("\(listItems.count) items • \(store.month) • week \(store.weekNumber)/4")
+                        .font(.system(size: 15, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+                Spacer()
+                Button {
+                    monthPickerDate = Date()
+                    showMonthPicker = true
+                } label: {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(.white.opacity(0.11), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            }
+
+            listSwitcher
+
+            periodActionButtons
+
+            if store.settings.showPrice {
+                HStack(spacing: 10) {
+                    SummaryPill(title: "Deze week", value: MoneyFormatter.string(totalVisible, currency: store.settings.currency))
+                    SummaryPill(title: "Alle winkels", value: MoneyFormatter.string(totalAll, currency: store.settings.currency))
+                    SummaryPill(title: "Deze maand", value: MoneyFormatter.string(store.monthTotal, currency: store.settings.currency))
+                }
+            }
+        }
+        .padding(18)
+        .background(
+            LinearGradient(
+                colors: [Color(red: 0.16, green: 0.14, blue: 0.36), Color(red: 0.07, green: 0.09, blue: 0.20)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 22, style: .continuous)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.10)))
+        .shadow(color: Color.black.opacity(0.25), radius: 18, y: 10)
+    }
+
+    private var listSwitcher: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(store.lists) { list in
+                    let isActive = list.id == store.activeListID
+                    Button {
+                        if !isActive {
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            Task { await store.switchList(to: list.id) }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if !list.isOwner {
+                                Image(systemName: "person.2.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(isActive ? Color(red: 0.22, green: 0.20, blue: 0.46) : .white.opacity(0.7))
+                            }
+                            if store.shareURL(for: list.id) != nil && list.isOwner {
+                                Image(systemName: "person.2.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(isActive ? Color(red: 0.22, green: 0.20, blue: 0.46) : .white.opacity(0.7))
+                            }
+                            Text(list.name)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundStyle(isActive ? Color(red: 0.22, green: 0.20, blue: 0.46) : .white)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(
+                            isActive
+                            ? Color.white
+                            : Color.white.opacity(0.15),
+                            in: Capsule()
+                        )
+                        .overlay(Capsule().stroke(Color.white.opacity(isActive ? 0 : 0.25), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        if list.isOwner {
+                            Button {
+                                listToRename = list
+                                renameText = list.name
+                            } label: {
+                                Label("Hernoem", systemImage: "pencil")
+                            }
+                            if store.lists.count > 1 {
+                                Button(role: .destructive) {
+                                    Task { await store.deleteList(id: list.id) }
+                                } label: {
+                                    Label("Verwijder lijst", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Create new list button
+                Button {
+                    newListName = ""
+                    showCreateList = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.15), in: Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 2)
+        }
+        .alert("Nieuwe lijst", isPresented: $showCreateList) {
+            TextField("Naam van de lijst", text: $newListName)
+            Button("Aanmaken") {
+                let name = newListName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { return }
+                Task {
+                    try? await store.createList(name: name)
+                }
+            }
+            Button("Annuleer", role: .cancel) {}
+        } message: {
+            Text("Geef je nieuwe lijst een naam.")
+        }
+        .alert("Hernoem lijst", isPresented: Binding(
+            get: { listToRename != nil },
+            set: { if !$0 { listToRename = nil } }
+        )) {
+            TextField("Naam", text: $renameText)
+            Button("Bewaren") {
+                if let list = listToRename {
+                    let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !name.isEmpty { store.renameList(id: list.id, name: name) }
+                }
+                listToRename = nil
+            }
+            Button("Annuleer", role: .cancel) { listToRename = nil }
+        } message: {
+            Text("Geef de lijst een nieuwe naam.")
+        }
+    }
+
+    private var periodActionButtons: some View {
+        HStack(spacing: 10) {
+            Button {
+                let _ = store.nextWeek()
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } label: {
+                PeriodButtonLabel(title: "Volgende week", systemImage: "calendar.badge.plus")
+            }
+            .accessibilityLabel("Volgende week")
+
+            Button {
+                store.nextMonth()
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } label: {
+                PeriodButtonLabel(title: "Volgende maand", systemImage: "calendar")
+            }
+            .accessibilityLabel("Volgende maand")
+        }
+        .frame(maxWidth: .infinity)
+        .buttonStyle(.plain)
+    }
+
+    private var storeCards: some View {
+        VStack(spacing: 12) {
+            if visibleItems.isEmpty {
+                emptyListCard
+            } else {
+                ForEach(groupedVisibleItems, id: \.store) { group in
+                    StoreSectionCard(
+                        storeName: group.store,
+                        itemCount: group.items.count,
+                        total: sum(group.items.map(totalOfItem)),
+                        currency: store.settings.currency,
+                        showPrice: store.settings.showPrice
+                    ) {
+                        ForEach(group.items) { item in
+                            storeItemRow(for: item)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var emptyListCard: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "basket")
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(tertiaryText)
+            Text("Nog niets in je lijst")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(primaryText)
+            Text("Voeg hieronder je eerste boodschap toe.")
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 34)
+        .padding(.horizontal, 16)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(subtleStroke))
+    }
+
+    @ViewBuilder
+    private func storeItemRow(for item: GroceryItem) -> some View {
+        if let index = store.items.firstIndex(where: { $0.id == item.id }) {
+            ItemRow(
+                item: $store.items[index],
+                currency: store.settings.currency,
+                showAmounts: store.settings.showPrice,
+                onChange: handleChange,
+                onEdit: { editTarget = store.items[index] },
+                onDelete: { deleteItem(id: store.items[index].id) }
+            )
+            .contextMenu {
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    store.addFavorite(from: store.items[index])
+                } label: {
+                    Label("Voeg toe aan favorieten", systemImage: "star.fill")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    deleteItem(id: store.items[index].id)
+                } label: {
+                    Label("Verwijder", systemImage: "trash")
                 }
             }
         }
@@ -314,96 +629,124 @@ struct ContentView: View {
     // MARK: - Add card
 
     private var addCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(spacing: 10) {
-                HStack(alignment: .bottom, spacing: 8) {
-                    VStack(alignment: .leading) {
-                        Text("Boodschap").font(.caption2).foregroundStyle(.secondary)
-                        TextField("vb. Appels", text: $name)
-                            .focused($focusedField, equals: .name)
-                            .onSubmit { addCurrentItem() }
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    VStack(alignment: .leading) {
-                        Text("Aantal").font(.caption2).foregroundStyle(.secondary)
-                        TextField("1", text: $qty)
-                            .focused($focusedField, equals: .qty)
-                            .onSubmit { addCurrentItem() }
-                            .keyboardType(.decimalPad)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    if store.settings.showPrice {
-                        VStack(alignment: .leading) {
-                            Text("Prijs/stuk (\(currencySymbol(store.settings.currency)))").font(.caption2).foregroundStyle(.secondary)
-                            TextField("0,00", text: $price)
-                                .focused($focusedField, equals: .price)
-                                .onSubmit { addCurrentItem() }
-                                .keyboardType(.decimalPad)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                    }
-                }
-                VStack(alignment: .leading) {
-                    Text("Winkel").font(.caption2).foregroundStyle(.secondary)
-                    Menu {
-                        ForEach(store.settings.stores, id: \.self) { st in Button(st) { selectedStore = st } }
-                    } label: {
-                        HStack {
-                            Text(selectedStore)
-                            Image(systemName: "chevron.up.chevron.down")
-                        }
-                        .frame(maxWidth: .infinity).padding(10)
-                        .background(RoundedRectangle(cornerRadius: 12).strokeBorder(.quaternary))
-                    }
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Nieuw item", systemImage: "plus.circle.fill")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(primaryText)
+                Spacer()
             }
-            Toggle(isOn: $recurring) { Text("Terugkeerbaar") }.tint(.blue)
-            Text("Terugkeerbaar blijft staan bij **Maand wissen**.")
-                .font(.footnote).foregroundStyle(.secondary)
-            Button {
-                focusedField = nil
-                addCurrentItem()
-            } label: {
-                Text("Toevoegen").fontWeight(.semibold).frame(maxWidth: .infinity)
+            HStack(spacing: 8) {
+                TextField("Boodschap", text: $name)
+                    .focused($focusedField, equals: .name)
+                    .onSubmit { addCurrentItem() }
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 11)
+                    .frame(height: 46)
+                    .background(fieldFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .foregroundStyle(primaryText)
+
+                TextField("Aantal", text: $qty)
+                    .focused($focusedField, equals: .qty)
+                    .onSubmit { addCurrentItem() }
+                    .keyboardType(.decimalPad)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .frame(width: 60, height: 46)
+                    .background(fieldFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .foregroundStyle(primaryText)
+
+                if store.settings.showPrice {
+                    TextField("Prijs", text: $price)
+                        .focused($focusedField, equals: .price)
+                        .onSubmit { addCurrentItem() }
+                        .keyboardType(.decimalPad)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .frame(width: 74, height: 46)
+                        .background(fieldFill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                        .foregroundStyle(primaryText)
+                }
+
+                Button {
+                    focusedField = nil
+                    addCurrentItem()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 46, height: 46)
+                        .background(
+                            LinearGradient(
+                                colors: [Color(red: 0.11, green: 0.54, blue: 1.0), Color(red: 0.22, green: 0.36, blue: 0.95)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isLoading)
             }
-            .buttonStyle(.borderedProminent)
+
+            HStack(spacing: 8) {
+                Menu {
+                    ForEach(store.settings.stores, id: \.self) { st in Button(st) { selectedStore = st } }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "storefront.fill")
+                            .font(.caption.weight(.bold))
+                        Text("Winkel: \(selectedStore)")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(tertiaryText)
+                    }
+                    .foregroundStyle(primaryText)
+                    .padding(.horizontal, 11)
+                    .frame(height: 34)
+                    .background(fieldFill, in: Capsule())
+                }
+
+                Button {
+                    recurring.toggle()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: recurring ? "arrow.clockwise.circle.fill" : "arrow.clockwise")
+                            .font(.caption.weight(.bold))
+                        Text("Elke maand")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(recurring ? Color(red: 0.13, green: 0.45, blue: 0.95) : secondaryText)
+                    .padding(.horizontal, 11)
+                    .frame(height: 34)
+                    .background(fieldFill, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 0)
+            }
         }
-        .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.secondary.opacity(0.15)))
+        .padding(14)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(subtleStroke))
     }
 
     // MARK: - Totals bar
 
     private var totalsBar: some View {
         let barContent = VStack(spacing: 10) {
-            if store.settings.showPrice {
-                HStack(spacing: 10) {
-                    KPI(title: "Totaal (zicht)", value: MoneyFormatter.string(totalVisible, currency: store.settings.currency))
-                    KPI(title: "Totaal (alle winkels)", value: MoneyFormatter.string(totalAll, currency: store.settings.currency))
-                    KPI(title: "Totaal deze maand", value: MoneyFormatter.string(store.monthTotal, currency: store.settings.currency))
-                }
-                .frame(maxWidth: .infinity).padding(.horizontal, 12)
-            }
             HStack(spacing: 10) {
-                Button {
-                    let _ = store.nextWeek()
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                } label: {
-                    Label("Volgende week", systemImage: "calendar.badge.plus")
-                        .font(.callout.weight(.semibold)).padding(.horizontal, 5).padding(.vertical, 6)
-                }
-                .buttonStyle(.bordered).controlSize(.small).buttonBorderShape(.capsule)
-                Button {
-                    store.nextMonth()
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
-                } label: {
-                    Label("Volgende maand", systemImage: "calendar")
-                        .font(.callout.weight(.semibold)).padding(.horizontal, 5).padding(.vertical, 6)
-                }
-                .buttonStyle(.bordered).controlSize(.small).buttonBorderShape(.capsule)
+                KPI(title: "Totaal (zicht)", value: MoneyFormatter.string(totalVisible, currency: store.settings.currency))
+                KPI(title: "Totaal (alle winkels)", value: MoneyFormatter.string(totalAll, currency: store.settings.currency))
+                KPI(title: "Totaal deze maand", value: MoneyFormatter.string(store.monthTotal, currency: store.settings.currency))
             }
-            .padding(.top, 4)
+            .frame(maxWidth: .infinity).padding(.horizontal, 12)
         }
         .padding(.top, 8)
         .frame(maxWidth: .infinity)
@@ -411,7 +754,7 @@ struct ContentView: View {
         return barContent
             .background(
                 UnevenRoundedRectangle(cornerRadii: .init(topLeading: 24, topTrailing: 24))
-                    .fill(store.settings.showPrice ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.secondary.opacity(0.08)))
+                    .fill(.ultraThinMaterial)
                     .ignoresSafeArea(edges: .bottom).allowsHitTesting(false)
             )
             .overlay(
@@ -429,7 +772,8 @@ struct ContentView: View {
         guard !trimmed.isEmpty else { return }
         let q = Double(qty.replacingOccurrences(of: ",", with: ".")) ?? 0
         let p = store.settings.showPrice ? (Double(price.replacingOccurrences(of: ",", with: ".")) ?? 0) : 0
-        store.addItem(name: trimmed, qty: q, unitPrice: p, store: selectedStore, recurring: recurring)
+        let didAdd = store.addItem(name: trimmed, qty: q, unitPrice: p, store: selectedStore, recurring: recurring)
+        guard didAdd else { return }
         name = ""; qty = "1"; price = ""; recurring = false
     }
 
@@ -446,6 +790,185 @@ struct ContentView: View {
     private var totalVisible: Double { sum(visibleItems.map(totalOfItem)) }
 }
 
+// MARK: - Dashboard Components
+
+private struct SummaryPill: View {
+    let title: String
+    let value: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isDarkMode: Bool { colorScheme == .dark }
+    private var textColor: Color { isDarkMode ? .white : Color(red: 0.08, green: 0.09, blue: 0.18) }
+    private var fillColor: Color { isDarkMode ? .white.opacity(0.08) : .white.opacity(0.34) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(textColor.opacity(0.48))
+            Text(value)
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundStyle(textColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(fillColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct DashboardActionStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(
+                LinearGradient(colors: [tint, tint.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.12)))
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.75), value: configuration.isPressed)
+    }
+}
+
+private struct TodayStatusChip: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isDarkMode: Bool { colorScheme == .dark }
+    private var textColor: Color { isDarkMode ? .white : Color(red: 0.07, green: 0.08, blue: 0.16) }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "basket.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(
+                    LinearGradient(
+                        colors: [Color(red: 0.18, green: 0.18, blue: 0.43), Color(red: 0.42, green: 0.32, blue: 0.85)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    in: Circle()
+                )
+
+            Text("Vandaag")
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(textColor)
+
+            Text(Date.now, format: .dateTime.day().month(.abbreviated))
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(textColor.opacity(0.52))
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel("Vandaag")
+    }
+}
+
+private struct PeriodButtonLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .bold))
+                .frame(width: 28, height: 28)
+                .background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(.white.opacity(0.16)))
+
+            Text(title)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .padding(.horizontal, 10)
+        .background(
+            LinearGradient(
+                colors: [.white.opacity(0.16), .white.opacity(0.08)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 15).stroke(.white.opacity(0.14)))
+        .shadow(color: Color.black.opacity(0.18), radius: 10, y: 5)
+    }
+}
+
+private struct StoreSectionCard<Content: View>: View {
+    let storeName: String
+    let itemCount: Int
+    let total: Double
+    let currency: String
+    let showPrice: Bool
+    @ViewBuilder var content: Content
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isDarkMode: Bool { colorScheme == .dark }
+    private var primaryText: Color { isDarkMode ? .white : Color(red: 0.07, green: 0.08, blue: 0.16) }
+    private var secondaryText: Color { primaryText.opacity(isDarkMode ? 0.42 : 0.56) }
+    private var cardFill: Color { isDarkMode ? .white.opacity(0.075) : .white.opacity(0.82) }
+    private var strokeColor: Color { isDarkMode ? .white.opacity(0.09) : Color(red: 0.15, green: 0.17, blue: 0.32).opacity(0.10) }
+    private var dividerColor: Color { isDarkMode ? .white.opacity(0.08) : Color.black.opacity(0.07) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(red: 0.22, green: 0.20, blue: 0.46))
+                        .frame(width: 42, height: 42)
+                    Image(systemName: "storefront.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(storeName)
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundStyle(primaryText)
+                    Text("\(itemCount) item\(itemCount == 1 ? "" : "s")")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(secondaryText)
+                }
+
+                Spacer()
+
+                if showPrice {
+                    Text(MoneyFormatter.string(total, currency: currency))
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
+            .padding(14)
+
+            Divider().overlay(dividerColor)
+
+            VStack(spacing: 0) {
+                content
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+        }
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(strokeColor))
+    }
+}
+
 // MARK: - Item Row
 
 struct ItemRow: View {
@@ -455,46 +978,72 @@ struct ItemRow: View {
     var onChange: (GroceryItem) -> Void
     var onEdit: () -> Void
     var onDelete: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isDarkMode: Bool { colorScheme == .dark }
+    private var primaryText: Color { isDarkMode ? .white : Color(red: 0.07, green: 0.08, blue: 0.16) }
+    private var secondaryText: Color { primaryText.opacity(isDarkMode ? 0.46 : 0.56) }
+    private var tertiaryText: Color { primaryText.opacity(isDarkMode ? 0.25 : 0.32) }
+    private var iconFill: Color { isDarkMode ? .white.opacity(0.08) : Color(red: 0.93, green: 0.94, blue: 0.98) }
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             Button {
                 item.checked.toggle(); onChange(item)
             } label: {
-                Image(systemName: item.checked ? "checkmark.square.fill" : "square")
-                    .imageScale(.large)
-                    .foregroundStyle(item.checked ? .blue : .secondary)
+                Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(item.checked ? Color(red: 0.28, green: 0.70, blue: 0.45) : tertiaryText)
             }
+            .buttonStyle(.plain)
+
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text(item.name).fontWeight(.semibold)
+                    Text(item.name)
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundStyle(item.checked ? tertiaryText : primaryText)
+                        .strikethrough(item.checked, color: tertiaryText)
                     if item.recurring {
-                        Text("↻").font(.subheadline)
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(Capsule().fill(Color.blue.opacity(0.2)))
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(secondaryText)
                     }
                 }
-                if showAmounts {
-                    HStack(spacing: 4) {
-                        Text("\(item.store) • \(formatQty(item.qty)) × \(MoneyFormatter.string(item.unitPrice, currency: currency)) =")
-                        Text(MoneyFormatter.string(totalOfItem(item), currency: currency)).bold()
+
+                HStack(spacing: 8) {
+                    Text("x\(formatQty(item.qty))")
+                    if showAmounts && item.unitPrice > 0 {
+                        Text(MoneyFormatter.string(totalOfItem(item), currency: currency))
+                            .fontWeight(.bold)
                     }
-                    .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text(item.store).font(.caption).foregroundStyle(.secondary)
+                    if !item.addedByName.isEmpty {
+                        Label(item.addedByName, systemImage: "person.fill")
+                    }
                 }
-                if !item.addedByName.isEmpty {
-                    Label(item.addedByName, systemImage: "person.fill")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                }
+                .font(.caption)
+                .foregroundStyle(item.checked ? tertiaryText.opacity(0.75) : secondaryText)
             }
             Spacer()
             HStack(spacing: 8) {
-                Button { onEdit() } label: { Image(systemName: "pencil").padding(8) }.buttonStyle(.bordered)
-                Button(role: .destructive) { onDelete() } label: { Image(systemName: "trash").padding(8) }.buttonStyle(.bordered)
+                Button { onEdit() } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(width: 30, height: 30)
+                        .background(iconFill, in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button(role: .destructive) { onDelete() } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(width: 30, height: 30)
+                        .background(iconFill, in: Circle())
+                }
+                .buttonStyle(.plain)
             }
+            .foregroundStyle(secondaryText)
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.vertical, 10)
     }
 
     private func formatQty(_ q: Double) -> String {
@@ -528,6 +1077,7 @@ struct EditItemSheet: View {
     @State private var name = ""; @State private var qty = ""
     @State private var price = ""; @State private var selectedStore = ""
     @State private var recurring = false
+    @State private var isFavorite = false
 
     var body: some View {
         NavigationStack {
@@ -553,6 +1103,14 @@ struct EditItemSheet: View {
                             }
                         }
                         Toggle("Terugkeerbaar", isOn: $recurring)
+                        Toggle(isOn: $isFavorite) {
+                            HStack(spacing: 6) {
+                                Image(systemName: isFavorite ? "star.fill" : "star")
+                                    .foregroundStyle(.yellow)
+                                Text("Favoriet")
+                            }
+                        }
+                        .tint(.yellow)
                     }
                 }
                 Section(footer: Text("Aangemaakt: \(item.createdAt.formatted(date: .abbreviated, time: .shortened))")) { EmptyView() }
@@ -564,7 +1122,8 @@ struct EditItemSheet: View {
             }
             .onAppear {
                 name = item.name; qty = fmt(item.qty)
-                price = fmt(item.unitPrice); selectedStore = item.store; recurring = item.recurring
+                price = fmt(item.unitPrice); selectedStore = item.store
+                recurring = item.recurring; isFavorite = item.isFavorite
             }
         }
     }
@@ -573,7 +1132,7 @@ struct EditItemSheet: View {
         item.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         item.qty = Double(qty.replacingOccurrences(of: ",", with: ".")) ?? 0
         item.unitPrice = Double(price.replacingOccurrences(of: ",", with: ".")) ?? 0
-        item.store = selectedStore; item.recurring = recurring
+        item.store = selectedStore; item.recurring = recurring; item.isFavorite = isFavorite
         onSave(item); dismiss()
     }
     private func fmt(_ n: Double) -> String { n == floor(n) ? String(Int(n)) : String(format: "%.2f", n) }
@@ -704,6 +1263,316 @@ private struct FavoriteChip: View {
     }
 }
 
+// MARK: - Favorites Sheet
+
+private struct FavoritesSheet: View {
+    @ObservedObject var store: CloudKitStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var addedID: String? = nil
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if store.favorites.isEmpty {
+                    VStack(spacing: 14) {
+                        Image(systemName: "star")
+                            .font(.system(size: 42, weight: .semibold))
+                            .foregroundStyle(.secondary.opacity(0.45))
+                        Text("Nog geen favorieten")
+                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                        Text("Hou een item ingedrukt en kies voeg toe aan favorieten.")
+                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 28)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 10) {
+                            ForEach(store.favorites) { favorite in
+                                FavoriteSheetRow(
+                                    item: favorite,
+                                    currency: store.settings.currency,
+                                    showPrice: store.settings.showPrice,
+                                    justAdded: addedID == favorite.id,
+                                    onAdd: {
+                                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                        store.addFavoriteToList(favorite)
+                                        addedID = favorite.id
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.15) {
+                                            if addedID == favorite.id { addedID = nil }
+                                        }
+                                    },
+                                    onDelete: {
+                                        store.removeFavorite(id: favorite.id)
+                                    }
+                                )
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+            }
+            .navigationTitle("Favorieten")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Klaar") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct FavoriteSheetRow: View {
+    let item: GroceryItem
+    let currency: String
+    let showPrice: Bool
+    let justAdded: Bool
+    var onAdd: () -> Void
+    var onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "star.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.yellow)
+                .frame(width: 38, height: 38)
+                .background(Color.yellow.opacity(0.13), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.name)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                    Text(item.store)
+                    Text("x\(item.qty, specifier: "%g")")
+                    if showPrice && item.unitPrice > 0 {
+                        Text(MoneyFormatter.string(totalOfItem(item), currency: currency))
+                    }
+                }
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button(action: onAdd) {
+                Image(systemName: justAdded ? "checkmark" : "plus")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(justAdded ? Color.green : Color.blue, in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contextMenu {
+            Button(role: .destructive, action: onDelete) {
+                Label("Verwijder uit favorieten", systemImage: "star.slash")
+            }
+        }
+    }
+}
+
+private struct ShareParticipantRow: View {
+    let participant: ShareParticipantInfo
+    var onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(participant.canRemove ? Color.blue.opacity(0.12) : Color.green.opacity(0.12))
+                    .frame(width: 38, height: 38)
+                Image(systemName: participant.canRemove ? "person.fill" : "crown.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(participant.canRemove ? .blue : .green)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(participant.name)
+                    .font(.subheadline.weight(.semibold))
+                Text("\(participant.role) • \(participant.status)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(participant.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if participant.canRemove {
+                Button(role: .destructive, action: onRemove) {
+                    Image(systemName: "minus.circle")
+                        .font(.system(size: 20, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Verwijder \(participant.name)")
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+// MARK: - List Sharing Row (per list in SettingsSheet)
+
+private struct ListSharingRow: View {
+    @ObservedObject var store: CloudKitStore
+    let list: GroceryListMeta
+
+    @State private var isExpanded = false
+    @State private var isCreatingShare = false
+    @State private var shareError: String? = nil
+    @State private var showShareSheet = false
+    @State private var shareURLToPresent: IdentifiableURL? = nil
+
+    private var shareURL: URL? { store.shareURL(for: list.id) }
+    private var participants: [ShareParticipantInfo] { store.shareParticipants(for: list.id) }
+    private var isOwner: Bool { store.isOwner(of: list.id) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header row (always visible)
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(shareURL != nil ? Color.green.opacity(0.12) : Color.secondary.opacity(0.08))
+                            .frame(width: 38, height: 38)
+                        Image(systemName: shareURL != nil ? "person.2.fill" : (isOwner ? "list.bullet" : "person.2"))
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(shareURL != nil ? .green : .secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(list.name)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        HStack(spacing: 6) {
+                            if !isOwner {
+                                Text("Gedeeld met jou")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else if let url = shareURL {
+                                let _ = url
+                                Text("Gedeeld • \(participants.count) persoon\(participants.count == 1 ? "" : "en")")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            } else {
+                                Text("Privé")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    Spacer()
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+
+            // Expanded detail
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 12) {
+                    Divider().padding(.top, 4)
+
+                    if !isOwner {
+                        // Participant view
+                        Label("Je bent deelnemer aan deze lijst", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.subheadline.weight(.semibold))
+                        Text("Wijzigingen die jij maakt zijn direct zichtbaar voor iedereen die de lijst deelt.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let url = shareURL {
+                        // Owner with active share
+                        if participants.isEmpty {
+                            Text("Nog geen deelnemers. Stuur de link naar je gezinsleden of vrienden.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            VStack(spacing: 6) {
+                                ForEach(participants) { participant in
+                                    ShareParticipantRow(participant: participant) {
+                                        Task { await store.removeShareParticipant(id: participant.id, from: list.id) }
+                                    }
+                                }
+                            }
+                        }
+
+                        Button {
+                            shareURLToPresent = IdentifiableURL(url)
+                        } label: {
+                            Label("Stuur uitnodigingslink", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.blue)
+
+                        Button(role: .destructive) {
+                            Task { await store.stopSharing(for: list.id) }
+                        } label: {
+                            Label("Stop met delen", systemImage: "xmark.circle")
+                        }
+                    } else {
+                        // Owner without share
+                        Text("Deel \"\(list.name)\" zodat anderen ook items kunnen toevoegen. Elk item toont wie het heeft toegevoegd.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Button {
+                            Task {
+                                isCreatingShare = true
+                                do {
+                                    if let url = try await store.createShare(for: list.id) {
+                                        shareURLToPresent = IdentifiableURL(url)
+                                    }
+                                } catch {
+                                    shareError = error.localizedDescription
+                                }
+                                isCreatingShare = false
+                            }
+                        } label: {
+                            if isCreatingShare {
+                                HStack {
+                                    ProgressView().controlSize(.small)
+                                    Text("Link aanmaken…")
+                                }
+                                .frame(maxWidth: .infinity)
+                            } else {
+                                Label("Maak uitnodigingslink aan", systemImage: "link.badge.plus")
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isCreatingShare)
+
+                        if let err = shareError {
+                            Text(err).font(.caption).foregroundStyle(.red)
+                        }
+                    }
+                }
+                .padding(.bottom, 8)
+                .sheet(item: $shareURLToPresent) { identifiable in
+                    ShareSheet(url: identifiable.url)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Settings Sheet
 
 struct SettingsSheet: View {
@@ -755,6 +1624,13 @@ struct SettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // MARK: Per-list sharing section
+                Section(header: Text("Lijsten & Delen")) {
+                    ForEach(store.lists) { list in
+                        ListSharingRow(store: store, list: list)
+                    }
+                }
+
                 if !dismissedSettingsInfoHint {
                     Section {
                         HStack(alignment: .top, spacing: 10) {

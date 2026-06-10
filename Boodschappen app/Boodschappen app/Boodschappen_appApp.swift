@@ -18,11 +18,13 @@ struct Boodschappen_appApp: App {
                     guard let url = activity.webpageURL else { return }
                     Task {
                         let container = CKContainer(identifier: "iCloud.be.vancoilliestudio.boodschappen")
-                        let meta = try? await container.shareMetadata(for: url)
-                        guard let meta else { return }
-                        try? await container.accept(meta)
-                        // Post notification so CloudKitStore can reload
-                        NotificationCenter.default.post(name: .init("ck.shareAccepted"), object: nil)
+                        do {
+                            let meta = try await container.shareMetadata(for: url)
+                            try await container.accept(meta)
+                            NotificationCenter.default.post(name: .init("ck.shareAccepted"), object: nil)
+                        } catch {
+                            // Share acceptance failed silently — user can retry via link
+                        }
                     }
                 }
         }

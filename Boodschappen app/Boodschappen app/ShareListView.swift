@@ -7,14 +7,16 @@ struct ShareListView: View {
 
     @State private var isCreatingShare = false
     @State private var shareError: String? = nil
-    @State private var shareURLToPresent: URL? = nil
+    @State private var shareURLToPresent: IdentifiableURL? = nil
     @State private var nameInput: String = ""
+
+    private var activeListID: String { store.activeListID }
 
     var body: some View {
         NavigationStack {
             Form {
                 nameSection
-                if store.isOwner {
+                if store.isOwner(of: activeListID) {
                     ownerSection
                 } else {
                     participantSection
@@ -26,8 +28,8 @@ struct ShareListView: View {
                     Button("Sluiten") { dismiss() }
                 }
             }
-            .sheet(item: $shareURLToPresent) { url in
-                ShareSheet(url: url)
+            .sheet(item: $shareURLToPresent) { identifiable in
+                ShareSheet(url: identifiable.url)
             }
             .onAppear { nameInput = store.currentUserName }
         }
@@ -55,8 +57,10 @@ struct ShareListView: View {
 
     @ViewBuilder
     private var ownerSection: some View {
-        Section(header: Text("Delen")) {
-            if let url = store.shareURL {
+        Section(header: Text("Delen – \(store.lists.first(where: { $0.id == activeListID })?.name ?? "")")) {
+            if let url = store.shareURL(for: activeListID) {
+                let participants = store.shareParticipants(for: activeListID)
+
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Lijst wordt gedeeld", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
@@ -67,8 +71,32 @@ struct ShareListView: View {
                 }
                 .padding(.vertical, 4)
 
+                if !participants.isEmpty {
+                    ForEach(participants) { participant in
+                        HStack(spacing: 10) {
+                            Image(systemName: participant.canRemove ? "person.fill" : "crown.fill")
+                                .foregroundStyle(participant.canRemove ? .blue : .green)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(participant.name).font(.subheadline.weight(.semibold))
+                                Text("\(participant.role) • \(participant.status)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if participant.canRemove {
+                                Button(role: .destructive) {
+                                    Task { await store.removeShareParticipant(id: participant.id, from: activeListID) }
+                                } label: {
+                                    Image(systemName: "minus.circle").font(.system(size: 18, weight: .semibold))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
                 Button {
-                    shareURLToPresent = url
+                    shareURLToPresent = IdentifiableURL(url)
                 } label: {
                     Label("Deel uitnodigingslink", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
@@ -76,7 +104,7 @@ struct ShareListView: View {
                 .buttonStyle(.borderedProminent)
 
                 Button(role: .destructive) {
-                    Task { await store.stopSharing() }
+                    Task { await store.stopSharing(for: activeListID) }
                 } label: {
                     Label("Stop met delen", systemImage: "xmark.circle")
                 }
@@ -90,8 +118,8 @@ struct ShareListView: View {
                     Task {
                         isCreatingShare = true
                         do {
-                            if let url = try await store.createShare() {
-                                shareURLToPresent = url
+                            if let url = try await store.createShare(for: activeListID) {
+                                shareURLToPresent = IdentifiableURL(url)
                             }
                         } catch {
                             shareError = error.localizedDescription
@@ -131,12 +159,6 @@ struct ShareListView: View {
     }
 }
 
-// MARK: - URL Identifiable wrapper
-
-extension URL: @retroactive Identifiable {
-    public var id: String { absoluteString }
-}
-
 // MARK: - Share sheet
 
 struct ShareSheet: UIViewControllerRepresentable {
@@ -147,4 +169,12 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - IdentifiableURL wrapper
+
+struct IdentifiableURL: Identifiable {
+    let id: String
+    let url: URL
+    init(_ url: URL) { self.url = url; self.id = url.absoluteString }
 }

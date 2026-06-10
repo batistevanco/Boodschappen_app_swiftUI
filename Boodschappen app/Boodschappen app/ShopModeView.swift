@@ -4,10 +4,29 @@ struct ShopModeView: View {
     @ObservedObject var store: CloudKitStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var selectedStoreFilter = "Alle"
 
-    private var listItems: [GroceryItem] {
+    private var allListItems: [GroceryItem] {
         store.items.filter { !$0.isFavorite }
             .sorted { !$0.checked && $1.checked }
+    }
+
+    private var listItems: [GroceryItem] {
+        guard selectedStoreFilter != "Alle" else { return allListItems }
+        return allListItems.filter { $0.store == selectedStoreFilter }
+    }
+
+    private var storeFilterOptions: [String] {
+        let configuredStores = store.settings.stores
+        let itemStores = allListItems.map(\.store)
+        let uniqueStores = Array(Set(configuredStores + itemStores))
+            .sorted {
+                let ia = configuredStores.firstIndex(of: $0) ?? Int.max
+                let ib = configuredStores.firstIndex(of: $1) ?? Int.max
+                if ia != ib { return ia < ib }
+                return $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        return ["Alle"] + uniqueStores
     }
 
     private var grouped: [(store: String, items: [GroceryItem])] {
@@ -62,6 +81,7 @@ struct ShopModeView: View {
     private var content: some View {
         VStack(spacing: 0) {
             header
+            storeFilterBar
             progressBar
             Divider().background(Color.white.opacity(0.06))
 
@@ -139,6 +159,47 @@ struct ShopModeView: View {
         .padding(.bottom, 14)
     }
 
+    private var storeFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(storeFilterOptions, id: \.self) { option in
+                    Button {
+                        withAnimation(reduceMotion ? .none : .spring(response: 0.28, dampingFraction: 0.82)) {
+                            selectedStoreFilter = option
+                        }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: option == "Alle" ? "square.grid.2x2" : "storefront")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text(option)
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(selectedStoreFilter == option ? .white : .white.opacity(0.55))
+                        .padding(.horizontal, 12)
+                        .frame(height: 36)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(selectedStoreFilter == option ? Color.white.opacity(0.16) : Color.white.opacity(0.07))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(selectedStoreFilter == option ? Color.white.opacity(0.26) : Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
+        }
+        .onChange(of: storeFilterOptions) { _, options in
+            if !options.contains(selectedStoreFilter) {
+                selectedStoreFilter = "Alle"
+            }
+        }
+    }
+
     // MARK: - Progress bar
 
     private var progressBar: some View {
@@ -185,7 +246,7 @@ struct ShopModeView: View {
             Image(systemName: "cart")
                 .font(.system(size: 48, weight: .light))
                 .foregroundStyle(.white.opacity(0.20))
-            Text("Geen items in je lijst")
+            Text(selectedStoreFilter == "Alle" ? "Geen items in je lijst" : "Geen items voor \(selectedStoreFilter)")
                 .font(.system(size: 18, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.35))
             Spacer()
