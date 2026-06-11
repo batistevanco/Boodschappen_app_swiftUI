@@ -101,7 +101,6 @@ final class CloudKitStore: ObservableObject {
     func initialize() async {
         isLoading = true
         defer { isLoading = false }
-        if Defaults.useScreenshotMockData { applyScreenshotMockData(); return }
         do {
             lists = []
             listRecordMap = [:]
@@ -172,14 +171,11 @@ final class CloudKitStore: ObservableObject {
     }
 
     private func loadItemsForList(_ listID: String) async throws {
-        guard let meta = lists.first(where: { $0.id == listID }),
-              let listRecord = listRecordMap[listID] else { return }
+        guard let meta = lists.first(where: { $0.id == listID }) else { return }
         let db = isOwnerMap[listID] == true ? privateDB : sharedDB
         let zoneID = meta.zoneID
 
-        let ref = CKRecord.Reference(record: listRecord, action: .deleteSelf)
-        let predicate = NSPredicate(format: "%K == %@", CKItemField.listRef, ref)
-        let query = CKQuery(recordType: CKTypes.item, predicate: predicate)
+        let query = CKQuery(recordType: CKTypes.item, predicate: NSPredicate(value: true))
 
         var fetched: [(GroceryItem, CKRecord)] = []
         var cursor: CKQueryOperation.Cursor? = nil
@@ -221,14 +217,6 @@ final class CloudKitStore: ObservableObject {
 
     @discardableResult
     func createList(name: String) async throws -> String {
-        if Defaults.useScreenshotMockData {
-            let id = "GroceryZone_\(uid())"
-            lists.append(GroceryListMeta(
-                id: id, name: name, isOwner: true,
-                zoneID: CKRecordZone.ID(zoneName: id, ownerName: CKCurrentUserDefaultName)
-            ))
-            return id
-        }
         return try await createListInCK(name: name, setActive: false)
     }
 
@@ -264,7 +252,7 @@ final class CloudKitStore: ObservableObject {
     func renameList(id: String, name: String) {
         guard let i = lists.firstIndex(where: { $0.id == id }) else { return }
         lists[i].name = name
-        guard !Defaults.useScreenshotMockData, let record = listRecordMap[id] else { return }
+        guard let record = listRecordMap[id] else { return }
         record[CKListField.listName] = name
         Task {
             _ = try? await privateDB.save(record)
@@ -323,7 +311,9 @@ final class CloudKitStore: ObservableObject {
     }
 
     // Public accessors for a specific list (used by SettingsSheet)
-    func shareURL(for listID: String) -> URL? { shareMap[listID]?.url }
+    func shareURL(for listID: String) -> URL? {
+        return shareMap[listID]?.url
+    }
     func shareParticipants(for listID: String) -> [ShareParticipantInfo] {
         guard let share = shareMap[listID] else { return [] }
         return participantInfos(from: share, canRemove: isOwnerMap[listID] == true)
@@ -331,7 +321,6 @@ final class CloudKitStore: ObservableObject {
     func isOwner(of listID: String) -> Bool { isOwnerMap[listID] ?? false }
 
     func createShare(for listID: String) async throws -> URL? {
-        if Defaults.useScreenshotMockData { return nil }
         guard isOwnerMap[listID] == true, let listRecord = listRecordMap[listID] else { return nil }
         if let existing = shareMap[listID], let url = existing.url { return url }
 
@@ -361,7 +350,6 @@ final class CloudKitStore: ObservableObject {
     }
 
     func stopSharing(for listID: String) async {
-        if Defaults.useScreenshotMockData { return }
         guard let s = shareMap[listID] else { return }
         do {
             try await privateDB.deleteRecord(withID: s.recordID)
@@ -371,10 +359,6 @@ final class CloudKitStore: ObservableObject {
     }
 
     func removeShareParticipant(id: String, from listID: String) async {
-        if Defaults.useScreenshotMockData {
-            if listID == activeListID { shareParticipants.removeAll { $0.id == id && $0.canRemove } }
-            return
-        }
         guard isOwnerMap[listID] == true, let share = shareMap[listID] else { return }
         guard let participant = share.participants.first(where: { $0.participantID == id && $0.role != .owner }) else { return }
         do {
@@ -455,7 +439,6 @@ final class CloudKitStore: ObservableObject {
 
     @MainActor
     func refreshItems() async {
-        if Defaults.useScreenshotMockData { return }
         guard activeZoneID != nil else { return }
         do {
             try await loadItemsForList(activeListID)
@@ -480,16 +463,6 @@ final class CloudKitStore: ObservableObject {
 
     @discardableResult
     func addItem(name: String, qty: Double, unitPrice: Double, store storeName: String, recurring: Bool) -> Bool {
-        if Defaults.useScreenshotMockData {
-            let displayName = currentUserName.isEmpty ? "Batiste" : currentUserName
-            items.append(GroceryItem(
-                id: "mock-\(uid())", name: name, qty: qty, unitPrice: unitPrice,
-                store: storeName, recurring: recurring, checked: false,
-                createdAt: Date(), addedByName: displayName
-            ))
-            return true
-        }
-
         guard let listRecord = activeListRecord, let zoneID = activeZoneID else {
             syncError = "De boodschappenlijst is nog niet klaar. Probeer opnieuw zodra iCloud geladen is."
             if !isLoading { Task { await initialize() } }
@@ -530,8 +503,7 @@ final class CloudKitStore: ObservableObject {
 
     func updateItem(_ item: GroceryItem) {
         if let i = items.firstIndex(where: { $0.id == item.id }) { items[i] = item }
-        guard !Defaults.useScreenshotMockData,
-              let record = itemRecordMap[activeListID]?[item.id] else { return }
+        guard let record = itemRecordMap[activeListID]?[item.id] else { return }
         record[CKItemField.name]      = item.name
         record[CKItemField.qty]       = item.qty
         record[CKItemField.unitPrice] = item.unitPrice
@@ -605,7 +577,6 @@ final class CloudKitStore: ObservableObject {
     }
 
     func resetAll() {
-        if Defaults.useScreenshotMockData { applyScreenshotMockData(); return }
         let ids = (itemRecordMap[activeListID] ?? [:]).values.map { $0.recordID }
         items = []; itemRecordMap[activeListID] = [:]; settings = Settings()
         month = Defaults.monthKey(); weekNumber = 1; monthTotal = 0
@@ -616,7 +587,6 @@ final class CloudKitStore: ObservableObject {
     }
 
     func purgeAll() {
-        if Defaults.useScreenshotMockData { applyScreenshotMockData(); return }
         resetAll()
         if let lr = activeListRecord {
             Task { _ = try? await activeDB.deleteRecord(withID: lr.recordID) }
@@ -632,15 +602,6 @@ final class CloudKitStore: ObservableObject {
     var favorites: [GroceryItem] { items.filter { $0.isFavorite } }
 
     func addFavorite(from item: GroceryItem) {
-        if Defaults.useScreenshotMockData {
-            if items.contains(where: { $0.isFavorite && $0.name.lowercased() == item.name.lowercased() }) { return }
-            items.append(GroceryItem(
-                id: "mock-favorite-\(uid())", name: item.name, qty: item.qty, unitPrice: item.unitPrice,
-                store: item.store, recurring: false, checked: false, createdAt: Date(),
-                addedByName: item.addedByName, isFavorite: true
-            ))
-            return
-        }
         guard let listRecord = activeListRecord, let zoneID = activeZoneID else { return }
         if items.contains(where: { $0.isFavorite && $0.name.lowercased() == item.name.lowercased() }) { return }
 
@@ -707,7 +668,6 @@ final class CloudKitStore: ObservableObject {
     // MARK: - Private helpers
 
     private func scheduleSaveList() {
-        if Defaults.useScreenshotMockData { return }
         let targetListID = activeListID
         let targetDB = isOwnerMap[targetListID] == true ? privateDB : sharedDB
         let capturedMonth    = month
@@ -724,7 +684,7 @@ final class CloudKitStore: ObservableObject {
             if let data = try? JSONEncoder().encode(capturedSettings) {
                 record[CKListField.settingsData] = data
             }
-            try? await targetDB.save(record)
+            _ = try? await targetDB.save(record)
         }
     }
 
@@ -755,74 +715,4 @@ final class CloudKitStore: ObservableObject {
         )
     }
 
-    // MARK: - Mock data
-
-    private func applyScreenshotMockData() {
-        currentUserName = "Batiste"
-        syncError = nil
-
-        let gezinID = "GroceryZone_gezin"
-        let kotID   = "GroceryZone_kot"
-
-        lists = [
-            GroceryListMeta(id: gezinID, name: "Gezin", isOwner: true,
-                            zoneID: CKRecordZone.ID(zoneName: gezinID, ownerName: CKCurrentUserDefaultName)),
-            GroceryListMeta(id: kotID, name: "Kot", isOwner: true,
-                            zoneID: CKRecordZone.ID(zoneName: kotID, ownerName: CKCurrentUserDefaultName))
-        ]
-
-        if activeListID.isEmpty || !lists.contains(where: { $0.id == activeListID }) {
-            activeListID = gezinID
-        }
-
-        isOwner = true
-        shareURL = URL(string: "https://www.icloud.com/share/mock")
-        shareParticipants = [
-            ShareParticipantInfo(id: "mock-owner", name: "Batiste",
-                                 detail: "Beheert deze lijst", role: "Eigenaar", status: "Actief", canRemove: false),
-            ShareParticipantInfo(id: "mock-mama", name: "Mama",
-                                 detail: "Kan items toevoegen en aanpassen", role: "Lezen en schrijven", status: "Actief", canRemove: true),
-            ShareParticipantInfo(id: "mock-papa", name: "Papa",
-                                 detail: "Kan items toevoegen en aanpassen", role: "Lezen en schrijven", status: "Actief", canRemove: true)
-        ]
-
-        settings = Settings(currency: "EUR", theme: .light,
-                            stores: ["Algemeen", "Colruyt", "Delhaize", "Aldi", "Kruidvat"], showPrice: true)
-        month = Defaults.monthKey()
-        weekNumber = 2
-        monthTotal = 86.45
-
-        items = [
-            mockItem("Volle melk",       qty: 2,  price: 1.29, store: "Colruyt",  by: "Batiste"),
-            mockItem("Griekse yoghurt",  qty: 1,  price: 2.49, store: "Colruyt",  by: "Batiste"),
-            mockItem("Bananen",          qty: 6,  price: 0.35, store: "Colruyt",  by: "Mama"),
-            mockItem("Sinaasappelsap",   qty: 1,  price: 2.99, store: "Colruyt",  by: "Mama"),
-            mockItem("Zuurdesembrood",   qty: 1,  price: 3.20, store: "Delhaize", by: "Batiste"),
-            mockItem("Pasta penne",      qty: 2,  price: 1.15, store: "Delhaize", by: "Lisa"),
-            mockItem("Tomatensaus",      qty: 2,  price: 1.79, store: "Delhaize", recurring: true, by: "Lisa"),
-            mockItem("Olijfolie",        qty: 1,  price: 6.49, store: "Delhaize", by: "Papa", isFavorite: true),
-            mockItem("Eieren",           qty: 12, price: 0.32, store: "Aldi",     by: "Papa"),
-            mockItem("Mozzarella",       qty: 2,  price: 0.95, store: "Aldi",     by: "Mama"),
-            mockItem("Geraspte kaas",    qty: 1,  price: 1.89, store: "Aldi",     by: "Thomas"),
-            mockItem("Wasmiddel",        qty: 1,  price: 8.99, store: "Kruidvat", by: "Thomas"),
-            mockItem("Tandpasta",        qty: 1,  price: 2.69, store: "Kruidvat", checked: true, by: "Thomas"),
-            mockItem("Shampoo",          qty: 1,  price: 4.49, store: "Kruidvat", by: "Lisa"),
-            mockItem("Keukenpapier",     qty: 1,  price: 3.49, store: "Algemeen", by: "Batiste"),
-            mockItem("Koffiecapsules",   qty: 2,  price: 4.25, store: "Algemeen", checked: true, by: "Papa"),
-            mockItem("Havermout",        qty: 1,  price: 1.89, store: "Algemeen", recurring: true, by: "Mama", isFavorite: true),
-        ]
-    }
-
-    private func mockItem(
-        _ name: String, qty: Double, price: Double, store: String,
-        recurring: Bool = false, checked: Bool = false,
-        by: String = "Batiste", isFavorite: Bool = false
-    ) -> GroceryItem {
-        GroceryItem(
-            id: "mock-\(name.lowercased().replacingOccurrences(of: " ", with: "-"))-\(by)",
-            name: name, qty: qty, unitPrice: price, store: store,
-            recurring: recurring, checked: checked, createdAt: Date(),
-            addedByName: by, isFavorite: isFavorite
-        )
-    }
 }

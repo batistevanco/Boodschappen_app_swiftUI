@@ -47,8 +47,6 @@ enum ViewMode: String { case all, store }
 
 enum Defaults {
     static let userDefaultsKey = "bb2_state_v1"
-    // Tijdelijk aan voor app screenshots. Zet terug op false of verwijder na de screenshots.
-    static let useScreenshotMockData = true
     static let defaultStores = ["Algemeen","Colruyt","Delhaize","Aldi","Lidl","Carrefour","Action","Kruidvat","Andere"]
     static func monthKey(_ d: Date = .init()) -> String {
         let c = Calendar.current
@@ -1425,7 +1423,7 @@ private struct ListSharingRow: View {
     @ObservedObject var store: CloudKitStore
     let list: GroceryListMeta
 
-    @State private var isExpanded = false
+    @State private var isExpanded = true
     @State private var isCreatingShare = false
     @State private var shareError: String? = nil
     @State private var showShareSheet = false
@@ -1460,13 +1458,12 @@ private struct ListSharingRow: View {
                                 Text("Gedeeld met jou")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                            } else if let url = shareURL {
-                                let _ = url
-                                Text("Gedeeld • \(participants.count) persoon\(participants.count == 1 ? "" : "en")")
+                            } else if shareURL != nil {
+                                Text("Personen beheren • \(participants.count)")
                                     .font(.caption)
                                     .foregroundStyle(.green)
                             } else {
-                                Text("Privé")
+                                Text("Privé • tik om te delen")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -1496,8 +1493,18 @@ private struct ListSharingRow: View {
                         Text("Wijzigingen die jij maakt zijn direct zichtbaar voor iedereen die de lijst deelt.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    } else if let url = shareURL {
+                    } else if shareURL != nil {
                         // Owner with active share
+                        HStack {
+                            Label("Personen beheren", systemImage: "person.2.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text("\(participants.count)")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.secondary)
+                        }
+
                         if participants.isEmpty {
                             Text("Nog geen deelnemers. Stuur de link naar je gezinsleden of vrienden.")
                                 .font(.caption)
@@ -1513,7 +1520,9 @@ private struct ListSharingRow: View {
                         }
 
                         Button {
-                            shareURLToPresent = IdentifiableURL(url)
+                            if let shareURL {
+                                shareURLToPresent = IdentifiableURL(shareURL)
+                            }
                         } label: {
                             Label("Stuur uitnodigingslink", systemImage: "square.and.arrow.up")
                                 .frame(maxWidth: .infinity)
@@ -1625,10 +1634,14 @@ struct SettingsSheet: View {
         NavigationStack {
             Form {
                 // MARK: Per-list sharing section
-                Section(header: Text("Lijsten & Delen")) {
+                Section {
                     ForEach(store.lists) { list in
                         ListSharingRow(store: store, list: list)
                     }
+                } header: {
+                    Text("Lijsten en personen")
+                } footer: {
+                    Text("Beheer per lijst wie toegang heeft, stuur een uitnodigingslink of verwijder personen uit een gedeelde lijst.")
                 }
 
                 if !dismissedSettingsInfoHint {
