@@ -230,13 +230,13 @@ final class CloudKitStore: ObservableObject {
         let record = CKRecord(recordType: CKTypes.list, recordID: recordID)
         record[CKListField.listName] = name
         record[CKListField.month] = Defaults.monthKey()
-        record[CKListField.weekNumber] = 1
+        record[CKListField.weekNumber] = "1"
         record[CKListField.monthTotal] = 0.0
         if let data = try? JSONEncoder().encode(Settings()) { record[CKListField.settingsData] = data }
-        let saved = try await privateDB.save(record)
+        try await saveRecord(record, in: privateDB)
 
         isOwnerMap[listID] = true
-        listRecordMap[listID] = saved
+        listRecordMap[listID] = record
         itemRecordMap[listID] = [:]
         lists.append(GroceryListMeta(id: listID, name: name, isOwner: true, zoneID: zoneID))
 
@@ -255,10 +255,10 @@ final class CloudKitStore: ObservableObject {
         guard let record = listRecordMap[id] else { return }
         record[CKListField.listName] = name
         Task {
-            _ = try? await privateDB.save(record)
+            try? await saveRecord(record, in: privateDB)
             if let share = self.shareMap[id] {
                 share[CKShare.SystemFieldKey.title] = name as CKRecordValue
-                _ = try? await self.privateDB.save(share)
+                try? await saveRecord(share, in: privateDB)
             }
         }
     }
@@ -352,7 +352,17 @@ final class CloudKitStore: ObservableObject {
     func stopSharing(for listID: String) async {
         guard let s = shareMap[listID] else { return }
         do {
-            try await privateDB.deleteRecord(withID: s.recordID)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let op = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: [s.recordID])
+                op.qualityOfService = .userInitiated
+                op.modifyRecordsResultBlock = { result in
+                    switch result {
+                    case .success: continuation.resume()
+                    case .failure(let error): continuation.resume(throwing: error)
+                    }
+                }
+                privateDB.add(op)
+            }
             shareMap.removeValue(forKey: listID)
             if listID == activeListID { shareURL = nil; shareParticipants = [] }
         } catch { syncError = error.localizedDescription }
@@ -363,12 +373,11 @@ final class CloudKitStore: ObservableObject {
         guard let participant = share.participants.first(where: { $0.participantID == id && $0.role != .owner }) else { return }
         do {
             share.removeParticipant(participant)
-            if let saved = try await privateDB.save(share) as? CKShare {
-                shareMap[listID] = saved
-                if listID == activeListID {
-                    shareURL = saved.url
-                    shareParticipants = participantInfos(from: saved, canRemove: true)
-                }
+            try await saveRecord(share, in: privateDB)
+            shareMap[listID] = share
+            if listID == activeListID {
+                shareURL = share.url
+                shareParticipants = participantInfos(from: share, canRemove: true)
             }
         } catch { syncError = error.localizedDescription }
     }
@@ -494,9 +503,10 @@ final class CloudKitStore: ObservableObject {
         items.append(item)
         itemRecordMap[activeListID, default: [:]][id] = record
 
+        let db = activeDB
         Task {
-            do { _ = try await activeDB.save(record) }
-            catch { self.syncError = error.localizedDescription }
+            do { try await saveRecord(record, in: db) }
+            catch { await MainActor.run { self.syncError = error.localizedDescription } }
         }
         return true
     }
@@ -511,7 +521,8 @@ final class CloudKitStore: ObservableObject {
         record[CKItemField.recurring] = item.recurring ? 1 : 0
         record[CKItemField.checked]   = item.checked ? 1 : 0
         record[CKItemField.isFavorite] = item.isFavorite ? 1 : 0
-        Task { _ = try? await activeDB.save(record) }
+        let db = activeDB
+        Task { try? await saveRecord(record, in: db) }
     }
 
     func removeItem(id: String) {
@@ -602,33 +613,16 @@ final class CloudKitStore: ObservableObject {
     var favorites: [GroceryItem] { items.filter { $0.isFavorite } }
 
     func addFavorite(from item: GroceryItem) {
-        guard let listRecord = activeListRecord, let zoneID = activeZoneID else { return }
-        if items.contains(where: { $0.isFavorite && $0.name.lowercased() == item.name.lowercased() }) { return }
-
-        let id = uid()
-        let record = CKRecord(recordType: CKTypes.item, recordID: CKRecord.ID(recordName: id, zoneID: zoneID))
-        record[CKItemField.listRef]     = CKRecord.Reference(record: listRecord, action: .deleteSelf)
-        record[CKItemField.name]        = item.name
-        record[CKItemField.qty]         = item.qty
-        record[CKItemField.unitPrice]   = item.unitPrice
-        record[CKItemField.store]       = item.store
-        record[CKItemField.recurring]   = 0
-        record[CKItemField.checked]     = 0
-        record[CKItemField.createdAt]   = Date()
-        record[CKItemField.addedByName] = item.addedByName
-        record[CKItemField.isFavorite]  = 1
-
-        let favorite = GroceryItem(
-            id: id, name: item.name, qty: item.qty, unitPrice: item.unitPrice,
-            store: item.store, recurring: false, checked: false,
-            createdAt: Date(), addedByName: item.addedByName, isFavorite: true
-        )
-        items.append(favorite)
-        itemRecordMap[activeListID, default: [:]][id] = record
-        Task { _ = try? await activeDB.save(record) }
+        var updated = item
+        updated.isFavorite = true
+        updateItem(updated)
     }
 
-    func removeFavorite(id: String) { removeItem(id: id) }
+    func removeFavorite(id: String) {
+        guard var item = items.first(where: { $0.id == id }) else { return }
+        item.isFavorite = false
+        updateItem(item)
+    }
 
     func addFavoriteToList(_ favorite: GroceryItem) {
         let displayName = currentUserName.isEmpty ? "Onbekend" : currentUserName
@@ -667,6 +661,22 @@ final class CloudKitStore: ObservableObject {
 
     // MARK: - Private helpers
 
+    /// Save a record using .changedKeys policy so it works for both insert and update.
+    private func saveRecord(_ record: CKRecord, in db: CKDatabase) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let op = CKModifyRecordsOperation(recordsToSave: [record], recordIDsToDelete: nil)
+            op.savePolicy = .changedKeys
+            op.qualityOfService = .userInitiated
+            op.modifyRecordsResultBlock = { result in
+                switch result {
+                case .success: continuation.resume()
+                case .failure(let error): continuation.resume(throwing: error)
+                }
+            }
+            db.add(op)
+        }
+    }
+
     private func scheduleSaveList() {
         let targetListID = activeListID
         let targetDB = isOwnerMap[targetListID] == true ? privateDB : sharedDB
@@ -679,18 +689,18 @@ final class CloudKitStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled, let record = self.listRecordMap[targetListID] else { return }
             record[CKListField.month]       = capturedMonth
-            record[CKListField.weekNumber]  = capturedWeek
+            record[CKListField.weekNumber]  = String(capturedWeek)
             record[CKListField.monthTotal]  = capturedTotal
             if let data = try? JSONEncoder().encode(capturedSettings) {
                 record[CKListField.settingsData] = data
             }
-            _ = try? await targetDB.save(record)
+            try? await saveRecord(record, in: targetDB)
         }
     }
 
     private func applyListRecord(_ record: CKRecord) {
         month      = record[CKListField.month] as? String ?? Defaults.monthKey()
-        weekNumber = Self.clampedWeekNumber(record[CKListField.weekNumber] as? Int ?? 1)
+        weekNumber = Self.clampedWeekNumber(Int(record[CKListField.weekNumber] as? String ?? "1") ?? 1)
         monthTotal = record[CKListField.monthTotal] as? Double ?? 0
         if let data    = record[CKListField.settingsData] as? Data,
            let decoded = try? JSONDecoder().decode(Settings.self, from: data) {

@@ -10,8 +10,9 @@ struct OnboardingView: View {
     @State private var currentStep = 0
     @State private var nameInput = ""
     @State private var appeared = false
+    @State private var listNames: [String] = [""]
 
-    private let totalSteps = 4
+    private let totalSteps = 5
 
     var body: some View {
         ZStack {
@@ -28,7 +29,7 @@ struct OnboardingView: View {
                 Spacer()
                 bottomBar
             }
-            .padding(.horizontal, 0)
+            .padding(.horizontal, 24)
             .padding(.vertical, 48)
         }
         .onAppear {
@@ -88,7 +89,8 @@ struct OnboardingView: View {
         switch currentStep {
         case 0: WelcomeStep(appeared: $appeared)
         case 1: NameStep(nameInput: $nameInput)
-        case 2: FeatureStep(
+        case 2: CreateListStep(listNames: $listNames)
+        case 3: FeatureStep(
             icon: "icloud.fill",
             iconColor: Color(red: 0.14, green: 0.55, blue: 0.85),
             title: "Altijd gesynchroniseerd",
@@ -99,7 +101,7 @@ struct OnboardingView: View {
                 ("checkmark.circle.fill", "Werkt automatisch op de achtergrond"),
             ]
         )
-        case 3: FeatureStep(
+        case 4: FeatureStep(
             icon: "person.2.fill",
             iconColor: Color(red: 0.29, green: 0.78, blue: 0.50),
             title: "Deel met je gezin",
@@ -150,28 +152,24 @@ struct OnboardingView: View {
                         .fill(buttonGradient)
                 )
             }
-            .disabled(currentStep == 1 && nameInput.trimmingCharacters(in: .whitespaces).isEmpty)
-            .opacity(currentStep == 1 && nameInput.trimmingCharacters(in: .whitespaces).isEmpty ? 0.45 : 1)
+            .disabled(isNextDisabled)
+            .opacity(isNextDisabled ? 0.45 : 1)
             .animation(reduceMotion ? .none : .spring(response: 0.3), value: nameInput.isEmpty)
 
-            // Skip / back
-            if currentStep > 0 && currentStep < totalSteps - 1 {
-                Button("Overslaan") {
-                    withAnimation(reduceMotion ? .none : .spring(response: 0.5, dampingFraction: 0.8)) {
-                        currentStep = totalSteps - 1
-                    }
-                }
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.45))
-            } else {
-                Spacer().frame(height: 20)
-            }
+            Spacer().frame(height: 20)
         }
+    }
+
+    private var isNextDisabled: Bool {
+        if currentStep == 1 { return nameInput.trimmingCharacters(in: .whitespaces).isEmpty }
+        if currentStep == 2 { return listNames.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } }
+        return false
     }
 
     private var buttonLabel: String {
         switch currentStep {
         case 0: return "Aan de slag"
+        case 2: return "Lijsten aanmaken"
         case totalSteps - 1: return "Begin met winkelen"
         default: return "Volgende"
         }
@@ -186,10 +184,15 @@ struct OnboardingView: View {
             )
         case 2:
             return LinearGradient(
-                colors: [Color(red: 0.14, green: 0.55, blue: 0.85), Color(red: 0.10, green: 0.70, blue: 0.60)],
+                colors: [Color(red: 0.55, green: 0.30, blue: 0.90), Color(red: 0.29, green: 0.24, blue: 0.78)],
                 startPoint: .leading, endPoint: .trailing
             )
         case 3:
+            return LinearGradient(
+                colors: [Color(red: 0.14, green: 0.55, blue: 0.85), Color(red: 0.10, green: 0.70, blue: 0.60)],
+                startPoint: .leading, endPoint: .trailing
+            )
+        case 4:
             return LinearGradient(
                 colors: [Color(red: 0.29, green: 0.78, blue: 0.50), Color(red: 0.10, green: 0.70, blue: 0.40)],
                 startPoint: .leading, endPoint: .trailing
@@ -208,9 +211,18 @@ struct OnboardingView: View {
             guard !trimmed.isEmpty else { return }
             store.setUserName(trimmed)
         }
+        if currentStep == 2 {
+            let names = listNames.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            guard !names.isEmpty else { return }
+            Task {
+                for name in names {
+                    try? await store.createList(name: name)
+                }
+            }
+        }
         if currentStep == totalSteps - 1 {
             withAnimation(reduceMotion ? .none : .spring(response: 0.5, dampingFraction: 0.85)) {
-                isPresented = false  // sets hasCompletedOnboarding = true via binding
+                isPresented = false
             }
             return
         }
@@ -267,7 +279,6 @@ private struct WelcomeStep: View {
                     .font(.system(size: 18, weight: .regular, design: .rounded))
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
                     .opacity(appeared ? 1 : 0)
                     .offset(y: appeared ? 0 : 20)
                     .animation(reduceMotion ? .none : .spring(response: 0.6, dampingFraction: 0.8).delay(0.3), value: appeared)
@@ -380,7 +391,173 @@ private struct NameStep: View {
     }
 }
 
-// MARK: - Step 3 & 4: Feature highlight
+// MARK: - Step 3: Create lists
+
+private struct CreateListStep: View {
+    @Binding var listNames: [String]
+    @FocusState private var focusedIndex: Int?
+    @State private var appeared = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let suggestions = ["Familie", "Persoonlijk", "Werk", "Huishouden"]
+    private let maxLists = 4
+
+    private var validNames: [String] {
+        listNames.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    var body: some View {
+        VStack(spacing: 28) {
+            // Icon
+            ZStack {
+                Circle()
+                    .fill(Color(red: 0.55, green: 0.30, blue: 0.90).opacity(0.18))
+                    .frame(width: 96, height: 96)
+                    .overlay(Circle().stroke(Color(red: 0.55, green: 0.30, blue: 0.90).opacity(0.3), lineWidth: 1))
+                    .shadow(color: Color(red: 0.55, green: 0.30, blue: 0.90).opacity(0.35), radius: 28, y: 8)
+                Image(systemName: "list.bullet.rectangle.portrait.fill")
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.55, green: 0.30, blue: 0.90))
+            }
+            .scaleEffect(appeared ? 1 : 0.6)
+            .opacity(appeared ? 1 : 0)
+
+            VStack(spacing: 10) {
+                Text("Maak je eerste lijst aan")
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+
+                Text("Een lijst is een verzameling boodschappen. Je kunt er meerdere aanmaken — bv. één voor het gezin en één voor jezelf.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 16)
+
+            VStack(spacing: 12) {
+                // Suggestions
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Suggesties")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .padding(.horizontal, 4)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(suggestions, id: \.self) { s in
+                                let isAdded = listNames.contains { $0.trimmingCharacters(in: .whitespaces).lowercased() == s.lowercased() }
+                                Button {
+                                    if isAdded {
+                                        listNames.removeAll { $0.trimmingCharacters(in: .whitespaces).lowercased() == s.lowercased() }
+                                        if listNames.isEmpty { listNames = [""] }
+                                    } else if listNames.count < maxLists {
+                                        let emptyIndex = listNames.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty })
+                                        if let i = emptyIndex { listNames[i] = s } else { listNames.append(s) }
+                                    }
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: isAdded ? "checkmark" : "plus")
+                                            .font(.system(size: 11, weight: .bold))
+                                        Text(s)
+                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                    }
+                                    .foregroundStyle(isAdded ? Color(red: 0.55, green: 0.30, blue: 0.90) : .white.opacity(0.75))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(isAdded ? Color(red: 0.55, green: 0.30, blue: 0.90).opacity(0.18) : Color.white.opacity(0.08), in: Capsule())
+                                    .overlay(Capsule().stroke(isAdded ? Color(red: 0.55, green: 0.30, blue: 0.90).opacity(0.5) : Color.white.opacity(0.12), lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                                .animation(reduceMotion ? .none : .spring(response: 0.3), value: isAdded)
+                            }
+                        }
+                        .padding(.horizontal, 4)
+                    }
+                }
+
+                // List name fields
+                VStack(spacing: 8) {
+                    ForEach(listNames.indices, id: \.self) { i in
+                        HStack(spacing: 12) {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.35))
+                                .frame(width: 20)
+
+                            TextField("", text: $listNames[i], prompt:
+                                Text(i == 0 ? "Naam van je lijst, bv. Familie" : "Nog een lijst…")
+                                    .foregroundColor(.white.opacity(0.28))
+                            )
+                            .font(.system(size: 16, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white)
+                            .focused($focusedIndex, equals: i)
+                            .submitLabel(i < listNames.count - 1 ? .next : .done)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.words)
+
+                            if i > 0 {
+                                Button {
+                                    listNames.remove(at: i)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.white.opacity(0.3))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(.white.opacity(focusedIndex == i ? 0.10 : 0.06))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(focusedIndex == i ? Color(red: 0.55, green: 0.30, blue: 0.90).opacity(0.8) : .white.opacity(0.10), lineWidth: 1.5)
+                                )
+                        )
+                        .animation(reduceMotion ? .none : .spring(response: 0.3), value: focusedIndex == i)
+                    }
+
+                    if listNames.count < maxLists {
+                        Button {
+                            listNames.append("")
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                focusedIndex = listNames.count - 1
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus.circle")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("Nog een lijst toevoegen")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            }
+                            .foregroundStyle(.white.opacity(0.4))
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 4)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 20)
+            .animation(reduceMotion ? .none : .spring(response: 0.6, dampingFraction: 0.8).delay(0.15), value: appeared)
+        }
+        .onAppear {
+            withAnimation(reduceMotion ? .none : .spring(response: 0.6, dampingFraction: 0.8)) {
+                appeared = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { focusedIndex = 0 }
+        }
+        .onDisappear { appeared = false }
+    }
+}
+
+// MARK: - Step 4 & 5: Feature highlight
 
 private struct FeatureStep: View {
     let icon: String
@@ -414,14 +591,12 @@ private struct FeatureStep: View {
                     .font(.system(size: 28, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
 
                 Text(subtitle)
                     .font(.system(size: 15))
                     .foregroundStyle(.white.opacity(0.55))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 32)
             }
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 16)
@@ -450,7 +625,7 @@ private struct FeatureStep: View {
                     }
                 }
             }
-            .frame(maxWidth: 340)
+            .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .fill(.white.opacity(0.06))
@@ -459,7 +634,6 @@ private struct FeatureStep: View {
                             .stroke(.white.opacity(0.10), lineWidth: 1)
                     )
             )
-            .padding(.horizontal, 24)
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 20)
             .animation(reduceMotion ? .none : .spring(response: 0.6, dampingFraction: 0.8).delay(0.15), value: appeared)

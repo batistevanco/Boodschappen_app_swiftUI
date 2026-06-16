@@ -126,7 +126,7 @@ struct ContentView: View {
 
     private func handleChange(_ updated: GroceryItem) { store.updateItem(updated) }
     private func deleteItem(id: String) { store.removeItem(id: id) }
-    private var listItems: [GroceryItem] { store.items.filter { !$0.isFavorite } }
+    private var listItems: [GroceryItem] { store.items }
     private var isDarkMode: Bool { colorScheme == .dark }
     private var primaryText: Color { isDarkMode ? .white : Color(red: 0.07, green: 0.08, blue: 0.16) }
     private var secondaryText: Color { primaryText.opacity(isDarkMode ? 0.58 : 0.62) }
@@ -254,7 +254,12 @@ struct ContentView: View {
                     Spacer()
                     Button {
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        showAddSheet = true
+                        if store.lists.isEmpty {
+                            newListName = ""
+                            showCreateList = true
+                        } else {
+                            showAddSheet = true
+                        }
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 22, weight: .bold))
@@ -467,12 +472,19 @@ struct ContentView: View {
                     newListName = ""
                     showCreateList = true
                 } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
-                        .background(Color.white.opacity(0.15), in: Circle())
-                        .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(Color.white.opacity(0.15), in: Circle())
+                            .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                        if store.lists.isEmpty {
+                            Text("Maak nieuwe lijst")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
             }
@@ -533,7 +545,9 @@ struct ContentView: View {
 
     private var storeCards: some View {
         VStack(spacing: 12) {
-            if visibleItems.isEmpty {
+            if store.lists.isEmpty {
+                noListsCard
+            } else if visibleItems.isEmpty {
                 emptyListCard
             } else {
                 ForEach(groupedVisibleItems, id: \.store) { group in
@@ -551,6 +565,31 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var noListsCard: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "list.bullet.clipboard")
+                .font(.system(size: 38, weight: .regular))
+                .foregroundStyle(tertiaryText)
+            Text("Nog geen lijst")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(primaryText)
+            Text("Tik op de **+** knop rechtsonder om je eerste boodschappenlijst aan te maken.")
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(secondaryText)
+                .multilineTextAlignment(.center)
+            Image(systemName: "arrow.down.right")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Color(red: 0.38, green: 0.35, blue: 0.90))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.trailing, 12)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+        .padding(.horizontal, 20)
+        .background(cardFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(subtleStroke))
     }
 
     private var emptyListCard: some View {
@@ -1001,6 +1040,11 @@ struct ItemRow: View {
                         .font(.system(size: 16, weight: .semibold, design: .rounded))
                         .foregroundStyle(item.checked ? tertiaryText : primaryText)
                         .strikethrough(item.checked, color: tertiaryText)
+                    if item.isFavorite {
+                        Image(systemName: "star.fill")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.yellow)
+                    }
                     if item.recurring {
                         Image(systemName: "arrow.clockwise")
                             .font(.caption.weight(.bold))
@@ -1641,7 +1685,9 @@ struct SettingsSheet: View {
                 } header: {
                     Text("Lijsten en personen")
                 } footer: {
-                    Text("Beheer per lijst wie toegang heeft, stuur een uitnodigingslink of verwijder personen uit een gedeelde lijst.")
+                    Text(store.lists.isEmpty
+                         ? "Maak eerst een lijst aan (bv. \"Familie\") via de + knop op het hoofdscherm. Daarna kan je die lijst delen met anderen."
+                         : "Beheer per lijst wie toegang heeft, stuur een uitnodigingslink of verwijder personen uit een gedeelde lijst.")
                 }
 
                 if !dismissedSettingsInfoHint {
