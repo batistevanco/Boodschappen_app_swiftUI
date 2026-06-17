@@ -93,6 +93,7 @@ final class CloudKitStore: ObservableObject {
         activeListID = UserDefaults.standard.string(forKey: "activeListID") ?? ""
         Task { @MainActor in await self.initialize() }
         observeForeground()
+        Task { await self.setupSubscriptions() }
     }
 
     // MARK: - Initialize
@@ -172,7 +173,8 @@ final class CloudKitStore: ObservableObject {
 
     private func loadItemsForList(_ listID: String) async throws {
         guard let meta = lists.first(where: { $0.id == listID }) else { return }
-        let db = isOwnerMap[listID] == true ? privateDB : sharedDB
+        let isOwnerList = isOwnerMap[listID] == true
+        let db = isOwnerList ? privateDB : sharedDB
         let zoneID = meta.zoneID
 
         let query = CKQuery(recordType: CKTypes.item, predicate: NSPredicate(value: true))
@@ -193,6 +195,18 @@ final class CloudKitStore: ObservableObject {
             }
             cursor = result.queryCursor
         } while cursor != nil
+
+        // If owner, also fetch participant-added items from sharedDB for this zone
+        if isOwnerList, shareMap[listID] != nil {
+            let sharedResults = try? await sharedDB.records(
+                matching: query, inZoneWith: zoneID, desiredKeys: nil, resultsLimit: 100
+            )
+            for (_, r) in sharedResults?.matchResults ?? [] {
+                if let record = try? r.get(), let item = itemFrom(record: record) {
+                    fetched.append((item, record))
+                }
+            }
+        }
 
         itemRecordMap[listID] = [:]
         for (item, record) in fetched { itemRecordMap[listID]?[item.id] = record }
@@ -304,9 +318,28 @@ final class CloudKitStore: ObservableObject {
     // MARK: - Sharing
 
     private func fetchExistingShare(for record: CKRecord, listID: String) async {
+        // Prefer the share reference embedded in the record itself
+        if let shareRef = record.share {
+            if let share = try? await privateDB.record(for: shareRef.recordID) as? CKShare {
+                shareMap[listID] = share
+                return
+            }
+        }
+        // Fallback: CloudKit default share recordName for zone-based shares
         let shareRecordID = CKRecord.ID(recordName: "cloudkit.share", zoneID: record.recordID.zoneID)
         if let share = try? await privateDB.record(for: shareRecordID) as? CKShare {
             shareMap[listID] = share
+        }
+    }
+
+    func refreshShareParticipants(for listID: String) async {
+        guard let listRecord = listRecordMap[listID] else { return }
+        await fetchExistingShare(for: listRecord, listID: listID)
+        if listID == activeListID {
+            if let share = shareMap[listID] {
+                shareURL = share.url
+                shareParticipants = participantInfos(from: share, canRemove: isOwnerMap[listID] == true)
+            }
         }
     }
 
@@ -455,6 +488,16 @@ final class CloudKitStore: ObservableObject {
         } catch { syncError = error.localizedDescription }
     }
 
+    private func setupSubscriptions() async {
+        let subID = "ck-items-changed"
+        let sub = CKDatabaseSubscription(subscriptionID: subID)
+        let info = CKSubscription.NotificationInfo()
+        info.shouldSendContentAvailable = true  // silent push
+        sub.notificationInfo = info
+        _ = try? await privateDB.save(sub)
+        _ = try? await sharedDB.save(CKDatabaseSubscription(subscriptionID: "\(subID)-shared"))
+    }
+
     private func observeForeground() {
         NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
@@ -465,6 +508,11 @@ final class CloudKitStore: ObservableObject {
             forName: .init("ck.shareAccepted"), object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in await self?.initialize() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .init("ck.remoteChange"), object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.refreshItems() }
         }
     }
 

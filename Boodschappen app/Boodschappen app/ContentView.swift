@@ -1775,6 +1775,13 @@ struct SettingsSheet: View {
             }
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("Instellingen")
+            .onAppear {
+                Task {
+                    for list in store.lists {
+                        await store.refreshShareParticipants(for: list.id)
+                    }
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { dismiss() } label: { Image(systemName: "chevron.backward") }
