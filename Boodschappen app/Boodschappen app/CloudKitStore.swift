@@ -77,6 +77,8 @@ final class CloudKitStore: ObservableObject {
     private var isOwnerMap: [String: Bool] = [:]
 
     private var saveListTask: Task<Void, Never>?
+    private var isInitializingStore = false
+    private var queuedAcceptedShare: AcceptedShareInfo?
 
     // MARK: CK
     private let ckContainer = CKContainer(identifier: "iCloud.be.vancoilliestudio.boodschappen")
@@ -91,39 +93,76 @@ final class CloudKitStore: ObservableObject {
     init() {
         currentUserName = UserDefaults.standard.string(forKey: "ck_userName") ?? ""
         activeListID = UserDefaults.standard.string(forKey: "activeListID") ?? ""
-        Task { @MainActor in await self.initialize() }
         observeForeground()
+        Task { @MainActor in await self.initialize(acceptedShare: AppDelegate.pendingAcceptedShare) }
         Task { await self.setupSubscriptions() }
     }
 
     // MARK: - Initialize
 
     @MainActor
-    func initialize() async {
+    func initialize(acceptedShare: AcceptedShareInfo? = nil) async {
+        if isInitializingStore {
+            if let acceptedShare {
+                queuedAcceptedShare = acceptedShare
+            }
+            return
+        }
+
+        isInitializingStore = true
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isInitializingStore = false
+            isLoading = false
+        }
+
+        var shareToLoad = acceptedShare
+        repeat {
+            queuedAcceptedShare = nil
+            await performInitialize(acceptedShare: shareToLoad)
+            shareToLoad = queuedAcceptedShare
+        } while shareToLoad != nil
+    }
+
+    @MainActor
+    private func performInitialize(acceptedShare: AcceptedShareInfo?) async {
         do {
             lists = []
             listRecordMap = [:]
             itemRecordMap = [:]
             shareMap = [:]
             isOwnerMap = [:]
+            syncError = nil
 
             try await loadAllPrivateLists()
-            try await loadAllSharedLists()
+            let acceptedListWasLoaded = try await loadAllSharedLists(acceptedShare: acceptedShare)
 
             if lists.isEmpty {
                 try await createListInCK(name: "Mijn lijst", setActive: true)
             } else {
-                if !lists.contains(where: { $0.id == activeListID }) {
-                    activeListID = lists[0].id
-                    UserDefaults.standard.set(activeListID, forKey: "activeListID")
-                }
+                selectActiveList(acceptedShare: acceptedShare, acceptedListWasLoaded: acceptedListWasLoaded)
                 try await loadItemsForList(activeListID)
                 restoreActiveListState()
             }
         } catch {
             syncError = error.localizedDescription
+        }
+    }
+
+    private func selectActiveList(acceptedShare: AcceptedShareInfo?, acceptedListWasLoaded: Bool) {
+        if let acceptedShare, acceptedListWasLoaded {
+            let targetListID = acceptedShare.zoneID.zoneName
+            if lists.contains(where: { $0.id == targetListID }) {
+                activeListID = targetListID
+                UserDefaults.standard.set(activeListID, forKey: "activeListID")
+                AppDelegate.pendingAcceptedShare = nil
+                return
+            }
+        }
+
+        if !lists.contains(where: { $0.id == activeListID }) {
+            activeListID = lists[0].id
+            UserDefaults.standard.set(activeListID, forKey: "activeListID")
         }
     }
 
@@ -134,12 +173,19 @@ final class CloudKitStore: ObservableObject {
             let listID = zone.zoneID.zoneName
             isOwnerMap[listID] = true
 
-            let query = CKQuery(recordType: CKTypes.list, predicate: NSPredicate(value: true))
-            let results = try await privateDB.records(
-                matching: query, inZoneWith: zone.zoneID, desiredKeys: nil, resultsLimit: 1
-            )
-            guard let (_, result) = results.matchResults.first,
-                  let record = try? result.get() else { continue }
+            let recordID = CKRecord.ID(recordName: "\(listID)_list", zoneID: zone.zoneID)
+            let record: CKRecord
+            if let fetchedRecord = try? await privateDB.record(for: recordID) {
+                record = fetchedRecord
+            } else {
+                let query = CKQuery(recordType: CKTypes.list, predicate: NSPredicate(value: true))
+                let results = try await privateDB.records(
+                    matching: query, inZoneWith: zone.zoneID, desiredKeys: nil, resultsLimit: 1
+                )
+                guard let (_, result) = results.matchResults.first,
+                      let fetchedRecord = try? result.get() else { continue }
+                record = fetchedRecord
+            }
 
             listRecordMap[listID] = record
             let name = record[CKListField.listName] as? String ?? "Mijn lijst"
@@ -150,24 +196,112 @@ final class CloudKitStore: ObservableObject {
         }
     }
 
-    private func loadAllSharedLists() async throws {
+    @discardableResult
+    private func loadAllSharedLists(acceptedShare: AcceptedShareInfo? = nil) async throws -> Bool {
+        var acceptedListWasLoaded = false
+        var acceptedLoadError: Error?
+
+        if let acceptedShare {
+            do {
+                if let rootRecordID = acceptedShare.rootRecordID {
+                    do {
+                        try await loadSharedList(rootRecordID: rootRecordID)
+                    } catch {
+                        print("[CloudKit] Fetch accepted root failed, trying zone query: \(cloudKitErrorDescription(error))")
+                        try await loadSharedList(zoneID: acceptedShare.zoneID, retries: 10)
+                    }
+                } else {
+                    try await loadSharedList(zoneID: acceptedShare.zoneID, retries: 10)
+                }
+                acceptedListWasLoaded = lists.contains { $0.id == acceptedShare.zoneID.zoneName }
+            } catch {
+                acceptedLoadError = error
+                print("[CloudKit] Accepted share not visible yet: \(cloudKitErrorDescription(error))")
+            }
+        }
+
         let zones = try await sharedDB.allRecordZones()
         for zone in zones {
-            let listID = zone.zoneID.zoneName
-            isOwnerMap[listID] = false
+            if zone.zoneID == acceptedShare?.zoneID { continue }
+            try? await loadSharedList(zoneID: zone.zoneID)
+        }
 
-            let query = CKQuery(recordType: CKTypes.list, predicate: NSPredicate(value: true))
-            let results = try await sharedDB.records(
-                matching: query, inZoneWith: zone.zoneID, desiredKeys: nil, resultsLimit: 1
-            )
-            guard let (_, result) = results.matchResults.first,
-                  let record = try? result.get() else { continue }
+        if let acceptedShare, !acceptedListWasLoaded {
+            acceptedListWasLoaded = lists.contains { $0.id == acceptedShare.zoneID.zoneName }
+        }
 
-            listRecordMap[listID] = record
-            let name = record[CKListField.listName] as? String ?? "Gedeelde lijst"
-            if !lists.contains(where: { $0.id == listID }) {
-                lists.append(GroceryListMeta(id: listID, name: name, isOwner: false, zoneID: zone.zoneID))
+        if acceptedShare != nil, !acceptedListWasLoaded, let acceptedLoadError {
+            syncError = "De uitnodiging is geaccepteerd, maar iCloud heeft de gedeelde lijst nog niet vrijgegeven. Sluit/open de app of probeer over enkele seconden opnieuw. \(cloudKitErrorDescription(acceptedLoadError))"
+        }
+
+        return acceptedListWasLoaded
+    }
+
+    private func loadSharedList(rootRecordID: CKRecord.ID) async throws {
+        let record = try await fetchSharedRootRecord(rootRecordID)
+        addSharedList(from: record)
+    }
+
+    private func loadSharedList(zoneID: CKRecordZone.ID, retries: Int = 1) async throws {
+        let record = try await fetchSharedListRecord(in: zoneID, retries: retries)
+        addSharedList(from: record)
+    }
+
+    private func fetchSharedRootRecord(_ recordID: CKRecord.ID) async throws -> CKRecord {
+        var lastError: Error?
+        for attempt in 0..<5 {
+            do {
+                let record = try await sharedDB.record(for: recordID)
+                if record.recordType == CKTypes.list { return record }
+                return try await fetchFirstSharedListRecord(in: recordID.zoneID)
+            } catch {
+                lastError = error
+                let delay = UInt64(500_000_000 * (attempt + 1))
+                try? await Task.sleep(nanoseconds: delay)
             }
+        }
+        if let lastError { throw lastError }
+        return try await fetchFirstSharedListRecord(in: recordID.zoneID)
+    }
+
+    private func fetchFirstSharedListRecord(in zoneID: CKRecordZone.ID) async throws -> CKRecord {
+        let query = CKQuery(recordType: CKTypes.list, predicate: NSPredicate(value: true))
+        let results = try await sharedDB.records(
+            matching: query, inZoneWith: zoneID, desiredKeys: nil, resultsLimit: 1
+        )
+        guard let (_, result) = results.matchResults.first else {
+            throw CKError(.unknownItem)
+        }
+        return try result.get()
+    }
+
+    private func fetchSharedListRecord(in zoneID: CKRecordZone.ID, retries: Int) async throws -> CKRecord {
+        var lastError: Error?
+        for attempt in 0..<max(1, retries) {
+            do {
+                let recordID = CKRecord.ID(recordName: "\(zoneID.zoneName)_list", zoneID: zoneID)
+                if let fetchedRecord = try? await sharedDB.record(for: recordID) {
+                    return fetchedRecord
+                }
+                return try await fetchFirstSharedListRecord(in: zoneID)
+            } catch {
+                lastError = error
+                let delay = UInt64(500_000_000 * (attempt + 1))
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
+        if let lastError { throw lastError }
+        throw CKError(.unknownItem)
+    }
+
+    private func addSharedList(from record: CKRecord) {
+        let listID = record.recordID.zoneID.zoneName
+        isOwnerMap[listID] = false
+        listRecordMap[listID] = record
+
+        let name = record[CKListField.listName] as? String ?? "Gedeelde lijst"
+        if !lists.contains(where: { $0.id == listID }) {
+            lists.append(GroceryListMeta(id: listID, name: name, isOwner: false, zoneID: record.recordID.zoneID))
         }
     }
 
@@ -197,13 +331,15 @@ final class CloudKitStore: ObservableObject {
         } while cursor != nil
 
         // If owner, also fetch participant-added items from sharedDB for this zone
-        if isOwnerList, shareMap[listID] != nil {
+        if isOwnerList {
             let sharedResults = try? await sharedDB.records(
                 matching: query, inZoneWith: zoneID, desiredKeys: nil, resultsLimit: 100
             )
             for (_, r) in sharedResults?.matchResults ?? [] {
                 if let record = try? r.get(), let item = itemFrom(record: record) {
-                    fetched.append((item, record))
+                    if !fetched.contains(where: { $0.0.id == item.id }) {
+                        fetched.append((item, record))
+                    }
                 }
             }
         }
@@ -318,17 +454,18 @@ final class CloudKitStore: ObservableObject {
     // MARK: - Sharing
 
     private func fetchExistingShare(for record: CKRecord, listID: String) async {
-        // Prefer the share reference embedded in the record itself
+        let zoneShareRecordID = CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: record.recordID.zoneID)
+        if let share = try? await privateDB.record(for: zoneShareRecordID) as? CKShare {
+            shareMap[listID] = share
+            return
+        }
+
+        // Existing root-record shares are valid for zones that do not support zone-wide
+        // sharing, as long as items have a parent reference to the list record.
         if let shareRef = record.share {
             if let share = try? await privateDB.record(for: shareRef.recordID) as? CKShare {
                 shareMap[listID] = share
-                return
             }
-        }
-        // Fallback: CloudKit default share recordName for zone-based shares
-        let shareRecordID = CKRecord.ID(recordName: "cloudkit.share", zoneID: record.recordID.zoneID)
-        if let share = try? await privateDB.record(for: shareRecordID) as? CKShare {
-            shareMap[listID] = share
         }
     }
 
@@ -355,31 +492,152 @@ final class CloudKitStore: ObservableObject {
 
     func createShare(for listID: String) async throws -> URL? {
         guard isOwnerMap[listID] == true, let listRecord = listRecordMap[listID] else { return nil }
-        if let existing = shareMap[listID], let url = existing.url { return url }
+        let zoneID = listRecord.recordID.zoneID
+        let zoneShareRecordID = CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: zoneID)
+
+        if let existing = shareMap[listID],
+           let url = await resolvedShareURL(for: existing, listID: listID) {
+            if existing.recordID.recordName != CKRecordNameZoneWideShare {
+                try? await ensureItemParentReferences(for: listID, listRecord: listRecord)
+            }
+            return url
+        }
+
+        if let shareRef = listRecord.share,
+           let existingRootShare = try? await privateDB.record(for: shareRef.recordID) as? CKShare,
+           let url = await resolvedShareURL(for: existingRootShare, listID: listID) {
+            shareMap[listID] = existingRootShare
+            try? await ensureItemParentReferences(for: listID, listRecord: listRecord)
+            return url
+        }
+
+        if let existingZoneShare = try? await privateDB.record(for: zoneShareRecordID) as? CKShare {
+            shareMap[listID] = existingZoneShare
+            if let url = await resolvedShareURL(for: existingZoneShare, listID: listID) {
+                return url
+            }
+            _ = try? await privateDB.deleteRecord(withID: existingZoneShare.recordID)
+            shareMap.removeValue(forKey: listID)
+        }
 
         let listName = lists.first(where: { $0.id == listID })?.name ?? "Boodschappenlijst"
-        let newShare = CKShare(rootRecord: listRecord)
+        let newShare = CKShare(recordZoneID: zoneID)
         newShare[CKShare.SystemFieldKey.title] = listName as CKRecordValue
         newShare.publicPermission = .readWrite
 
-        let op = CKModifyRecordsOperation(recordsToSave: [listRecord, newShare])
-        op.savePolicy = .changedKeys
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+        let savedRecord: CKRecord
+        do {
+            savedRecord = try await privateDB.save(newShare)
+        } catch {
+            print("[CloudKit] Zone-wide share failed: \(cloudKitErrorDescription(error))")
+            return try await createRootRecordShare(for: listID, listRecord: listRecord)
+        }
+        let finalShare = (savedRecord as? CKShare) ?? newShare
+        shareMap[listID] = finalShare
+        if listID == activeListID {
+            shareURL = finalShare.url
+            shareParticipants = participantInfos(from: finalShare, canRemove: true)
+        }
+        if let url = await resolvedShareURL(for: finalShare, listID: listID) {
+            return url
+        }
+
+        throw NSError(
+            domain: "Boodschappen.CloudKitShare",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "CloudKit heeft de uitnodigingslink nog niet vrijgegeven. Probeer over enkele seconden opnieuw."
+            ]
+        )
+    }
+
+    private func resolvedShareURL(for share: CKShare, listID: String) async -> URL? {
+        if let url = share.url {
+            shareMap[listID] = share
+            if listID == activeListID { shareURL = url }
+            return url
+        }
+
+        for attempt in 0..<6 {
+            let delay = UInt64(500_000_000 * (attempt + 1))
+            try? await Task.sleep(nanoseconds: delay)
+            if let refreshed = try? await privateDB.record(for: share.recordID) as? CKShare {
+                shareMap[listID] = refreshed
+                if listID == activeListID {
+                    shareURL = refreshed.url
+                    shareParticipants = participantInfos(from: refreshed, canRemove: true)
+                }
+                if let url = refreshed.url { return url }
+            }
+        }
+        return nil
+    }
+
+    private func createRootRecordShare(for listID: String, listRecord: CKRecord) async throws -> URL? {
+        try await ensureItemParentReferences(for: listID, listRecord: listRecord)
+
+        let listName = lists.first(where: { $0.id == listID })?.name ?? "Boodschappenlijst"
+        let share = CKShare(rootRecord: listRecord)
+        share[CKShare.SystemFieldKey.title] = listName as CKRecordValue
+        share.publicPermission = .readWrite
+
+        let savedShare = try await saveRootShare(share, rootRecord: listRecord)
+        shareMap[listID] = savedShare
+        if listID == activeListID {
+            shareURL = savedShare.url
+            shareParticipants = participantInfos(from: savedShare, canRemove: true)
+        }
+
+        if let url = await resolvedShareURL(for: savedShare, listID: listID) {
+            return url
+        }
+
+        throw NSError(
+            domain: "Boodschappen.CloudKitShare",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey: "CloudKit heeft de uitnodigingslink nog niet vrijgegeven. Probeer over enkele seconden opnieuw."
+            ]
+        )
+    }
+
+    private func ensureItemParentReferences(for listID: String, listRecord: CKRecord) async throws {
+        if itemRecordMap[listID] == nil {
+            try await loadItemsForList(listID)
+        }
+
+        let records = itemRecordMap[listID].map { Array($0.values) } ?? []
+        let recordsToSave = records.filter { record in
+            record.parent?.recordID != listRecord.recordID
+        }
+
+        guard !recordsToSave.isEmpty else { return }
+        recordsToSave.forEach { $0.setParent(listRecord) }
+        try await modifyRecords(saving: recordsToSave, deleting: [], in: privateDB)
+    }
+
+    private func saveRootShare(_ share: CKShare, rootRecord: CKRecord) async throws -> CKShare {
+        var savedShare: CKShare?
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let op = CKModifyRecordsOperation(recordsToSave: [rootRecord, share], recordIDsToDelete: nil)
+            op.savePolicy = .changedKeys
+            op.qualityOfService = .userInitiated
+            op.perRecordSaveBlock = { _, result in
+                if case .success(let record) = result, let share = record as? CKShare {
+                    savedShare = share
+                }
+            }
             op.modifyRecordsResultBlock = { result in
                 switch result {
-                case .success: cont.resume()
-                case .failure(let e): cont.resume(throwing: e)
+                case .success: continuation.resume()
+                case .failure(let error):
+                    print("[CloudKit] Root-record share failed: \(self.cloudKitErrorDescription(error))")
+                    continuation.resume(throwing: self.userFacingCloudKitError(error))
                 }
             }
             privateDB.add(op)
         }
-
-        shareMap[listID] = newShare
-        if listID == activeListID {
-            shareURL = newShare.url
-            shareParticipants = participantInfos(from: newShare, canRemove: true)
-        }
-        return newShare.url
+        return savedShare ?? share
     }
 
     func stopSharing(for listID: String) async {
@@ -506,8 +764,17 @@ final class CloudKitStore: ObservableObject {
         }
         NotificationCenter.default.addObserver(
             forName: .init("ck.shareAccepted"), object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in await self?.initialize() }
+        ) { [weak self] note in
+            let acceptedShare = note.object as? AcceptedShareInfo
+            Task { @MainActor in await self?.initialize(acceptedShare: acceptedShare) }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .init("ck.shareError"), object: nil, queue: .main
+        ) { [weak self] note in
+            let errMsg = (note.object as? String) ?? "Onbekende fout bij accepteren uitnodiging."
+            Task { @MainActor [weak self] in
+                self?.syncError = errMsg
+            }
         }
         NotificationCenter.default.addObserver(
             forName: .init("ck.remoteChange"), object: nil, queue: .main
@@ -533,6 +800,7 @@ final class CloudKitStore: ObservableObject {
         let displayName = currentUserName.isEmpty ? "Onbekend" : currentUserName
 
         record[CKItemField.listRef]     = CKRecord.Reference(record: listRecord, action: .deleteSelf)
+        record.setParent(listRecord)
         record[CKItemField.name]        = name
         record[CKItemField.qty]         = qty
         record[CKItemField.unitPrice]   = unitPrice
@@ -709,6 +977,23 @@ final class CloudKitStore: ObservableObject {
 
     // MARK: - Private helpers
 
+    private func modifyRecords(saving recordsToSave: [CKRecord], deleting recordIDsToDelete: [CKRecord.ID], in db: CKDatabase) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let op = CKModifyRecordsOperation(recordsToSave: recordsToSave, recordIDsToDelete: recordIDsToDelete)
+            op.savePolicy = .changedKeys
+            op.qualityOfService = .userInitiated
+            op.modifyRecordsResultBlock = { result in
+                switch result {
+                case .success: continuation.resume()
+                case .failure(let error):
+                    print("[CloudKit] Modify records failed: \(self.cloudKitErrorDescription(error))")
+                    continuation.resume(throwing: self.userFacingCloudKitError(error))
+                }
+            }
+            db.add(op)
+        }
+    }
+
     /// Save a record using .changedKeys policy so it works for both insert and update.
     private func saveRecord(_ record: CKRecord, in db: CKDatabase) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -723,6 +1008,40 @@ final class CloudKitStore: ObservableObject {
             }
             db.add(op)
         }
+    }
+
+    private func userFacingCloudKitError(_ error: Error) -> Error {
+        NSError(
+            domain: "Boodschappen.CloudKit",
+            code: (error as NSError).code,
+            userInfo: [NSLocalizedDescriptionKey: cloudKitErrorDescription(error)]
+        )
+    }
+
+    private func cloudKitErrorDescription(_ error: Error) -> String {
+        let nsError = error as NSError
+        var parts = ["\(nsError.localizedDescription)"]
+
+        if let ckError = error as? CKError {
+            parts.append("Code: \(ckError.code.rawValue)")
+        } else {
+            parts.append("Code: \(nsError.code)")
+        }
+
+        for key in ["ServerDescription", "NSDebugDescription", "CKErrorDescription"] {
+            if let message = nsError.userInfo[key] as? String, !message.isEmpty {
+                parts.append(message)
+            }
+        }
+
+        if let partial = nsError.userInfo[CKPartialErrorsByItemIDKey] as? [AnyHashable: Error], !partial.isEmpty {
+            let details = partial.map { key, value in
+                "\(key): \((value as NSError).localizedDescription)"
+            }
+            parts.append(details.joined(separator: " | "))
+        }
+
+        return parts.joined(separator: " - ")
     }
 
     private func scheduleSaveList() {

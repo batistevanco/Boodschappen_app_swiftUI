@@ -1526,6 +1526,7 @@ private struct ListSharingRow: View {
 
             // Expanded detail
             if isExpanded {
+                let _ = Task { await store.refreshShareParticipants(for: list.id) }
                 VStack(alignment: .leading, spacing: 12) {
                     Divider().padding(.top, 4)
 
