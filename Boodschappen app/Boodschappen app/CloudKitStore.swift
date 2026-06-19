@@ -760,7 +760,12 @@ final class CloudKitStore: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in await self?.refreshItems() }
+            Task { @MainActor in await self?.refreshAllListsAfterActivation() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.refreshAllListsAfterActivation() }
         }
         NotificationCenter.default.addObserver(
             forName: .init("ck.shareAccepted"), object: nil, queue: .main
@@ -781,6 +786,12 @@ final class CloudKitStore: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in await self?.refreshItems() }
         }
+    }
+
+    @MainActor
+    private func refreshAllListsAfterActivation() async {
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        await initialize(acceptedShare: AppDelegate.pendingAcceptedShare)
     }
 
     // MARK: - CRUD

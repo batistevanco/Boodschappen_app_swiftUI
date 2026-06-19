@@ -47,6 +47,14 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = SceneDelegate.self
+        return configuration
+    }
+
     // Wordt aangeroepen door iOS wanneer gebruiker een CloudKit share accepteert
     func application(_ application: UIApplication,
                      userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
@@ -117,8 +125,12 @@ class AppDelegate: NSObject, UIApplicationDelegate {
         }
         Task {
             do {
-                try await container.accept(metadata)
-                print("[CloudKit] Share metadata accepted successfully.")
+                if metadata.participantRole != .owner && metadata.participantStatus == .pending {
+                    try await container.accept(metadata)
+                    print("[CloudKit] Share metadata accepted successfully.")
+                } else {
+                    print("[CloudKit] Share metadata already available. role=\(metadata.participantRole), status=\(metadata.participantStatus)")
+                }
                 await notifyAccepted(zoneID: zoneID, rootRecordID: rootRecordID)
             } catch {
                 print("[CloudKit] Share metadata acceptance failed with error: \(error.localizedDescription)")
@@ -176,6 +188,38 @@ class AppDelegate: NSObject, UIApplicationDelegate {
                 name: .init("ck.shareAccepted"),
                 object: pendingAcceptedShare
             )
+        }
+    }
+}
+
+final class SceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(_ scene: UIScene,
+               willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+        if let metadata = connectionOptions.cloudKitShareMetadata {
+            AppDelegate.acceptShareMetadata(metadata)
+        } else {
+            for context in connectionOptions.urlContexts where AppDelegate.canHandleShareURL(context.url) {
+                AppDelegate.acceptShare(url: context.url)
+            }
+            for activity in connectionOptions.userActivities {
+                if AppDelegate.handleUserActivity(activity) { break }
+            }
+        }
+    }
+
+    func windowScene(_ windowScene: UIWindowScene,
+                     userDidAcceptCloudKitShareWith cloudKitShareMetadata: CKShare.Metadata) {
+        AppDelegate.acceptShareMetadata(cloudKitShareMetadata)
+    }
+
+    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+        AppDelegate.handleUserActivity(userActivity)
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        for context in URLContexts where AppDelegate.canHandleShareURL(context.url) {
+            AppDelegate.acceptShare(url: context.url)
         }
     }
 }
